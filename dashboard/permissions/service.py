@@ -25,6 +25,10 @@ class DashboardPermissions:
         "templates:read",
         "templates:install",
         "playground:read",
+        "organizations:read",
+        "workspaces:read",
+        "members:read",
+        "knowledge:read",
     }
 
     def authorize(self, session: Session | None, permission: str) -> bool:

@@ -9,6 +9,20 @@
 
 Authentication, owner isolation, rate limiting, Policy Engine checks, redacted audit events, request IDs, and deny-by-default scopes apply to these endpoints. Playground returns metadata only and cannot execute a task.
 
+## Nexora 2.2 team endpoints
+
+- `GET /api/v1/organizations` requires `organizations:read`.
+- `GET /api/v1/workspaces` requires `workspaces:read`.
+- `POST /api/v1/workspaces` requires `workspaces:write` and organization RBAC.
+- `GET /api/v1/members?workspace_id=...` requires `members:read`.
+- `POST /api/v1/invite` requires `members:invite`, workspace RBAC, and a matching one-time approval.
+- `GET /api/v1/knowledge?workspace_id=...` requires `knowledge:read`.
+- `POST /api/v1/knowledge` requires `knowledge:write`.
+
+Tasks may include `workspace_id`. Agent and skill listing may use the same query
+parameter to return only components assigned to that workspace. Tenant IDs are
+never authorization credentials; membership and RBAC are checked independently.
+
 The API is a separate process and authenticated facade over TaskService,
 Agent Registry, Skill Registry, Policy Engine, approvals, and owner-isolated
 repositories. It does not import OpenClawProvider or OpenClawTransport and has

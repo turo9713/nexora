@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 1.1.0
+  version: 1.2.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
@@ -64,6 +64,60 @@ paths:
       operationId: listPlaygroundExamples
       responses:
         "200": {description: Sandbox-only example catalogue}
+  /organizations:
+    get:
+      operationId: listOrganizations
+      responses:
+        "200": {description: Organizations visible to the authenticated user}
+  /workspaces:
+    get:
+      operationId: listWorkspaces
+      parameters:
+        - {name: organization_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Membership-scoped workspaces}
+    post:
+      operationId: createWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WorkspaceCreate"}
+      responses:
+        "201": {description: Workspace created after RBAC and policy checks}
+  /members:
+    get:
+      operationId: listMembers
+      parameters:
+        - {name: workspace_id, in: query, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Workspace members visible to authorized roles}
+  /invite:
+    post:
+      operationId: inviteMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/MemberInvite"}
+      responses:
+        "201": {description: Member invited using a matching one-time approval}
+  /knowledge:
+    get:
+      operationId: listKnowledge
+      parameters:
+        - {name: workspace_id, in: query, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Role-filtered workspace knowledge}
+    post:
+      operationId: addKnowledge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/KnowledgeCreate"}
+      responses:
+        "201": {description: Sanitized workspace knowledge document created}
   /webhooks:
     get:
       operationId: listWebhooks
@@ -88,3 +142,32 @@ components:
         title: {type: string, minLength: 1, maxLength: 200}
         agent: {type: string, pattern: "^[a-z][a-z0-9-]{1,63}$"}
         skill: {type: string, pattern: "^[a-z][a-z0-9-]{1,63}$"}
+        workspace_id: {type: string, pattern: "^WS-[A-F0-9]{12}$"}
+    WorkspaceCreate:
+      type: object
+      additionalProperties: false
+      required: [organization_id, name]
+      properties:
+        organization_id: {type: string, pattern: "^ORG-[A-F0-9]{12}$"}
+        name: {type: string, minLength: 2, maxLength: 120}
+        description: {type: string, maxLength: 1000}
+    MemberInvite:
+      type: object
+      additionalProperties: false
+      required: [workspace_id, email_hash, display_name, role, approval_id]
+      properties:
+        workspace_id: {type: string, pattern: "^WS-[A-F0-9]{12}$"}
+        email_hash: {type: string, pattern: "^[a-f0-9]{64}$"}
+        display_name: {type: string, minLength: 2, maxLength: 80}
+        role: {type: string, enum: [ADMIN, MANAGER, OPERATOR, VIEWER]}
+        approval_id: {type: string, pattern: "^APR-[A-Za-z0-9-]{6,64}$"}
+    KnowledgeCreate:
+      type: object
+      additionalProperties: false
+      required: [workspace_id, name, type, content]
+      properties:
+        workspace_id: {type: string, pattern: "^WS-[A-F0-9]{12}$"}
+        name: {type: string, minLength: 2, maxLength: 120}
+        type: {type: string, enum: [text, markdown, policy, template]}
+        access_level: {type: string, enum: [TEAM, MANAGERS, ADMINS]}
+        content: {type: string, minLength: 1, maxLength: 100000}

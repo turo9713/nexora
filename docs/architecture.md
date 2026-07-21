@@ -1,5 +1,21 @@
 # Architecture
 
+## Tenant request path (v2.2)
+
+```text
+Authenticated request
+  -> external identity namespace
+  -> organization
+  -> active workspace membership
+  -> RBAC
+  -> Policy / Approval
+  -> workspace-scoped repository
+```
+
+Organizations and workspaces wrap the existing runtime rather than replacing
+it. Existing owner namespaces and JSON state remain compatible; migration 006
+adds nullable tenant references to tasks and new collaboration tables.
+
 Nexora 2.0 preserves the proven runtime packages and adds a public release
 boundary. `core/README.md` maps Core to the existing packages without copying
 or renaming modules.

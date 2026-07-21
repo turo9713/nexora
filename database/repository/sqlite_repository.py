@@ -53,24 +53,58 @@ class SQLiteRepository:
             (3, self.migrations_root / "003_skills.sql"),
             (4, self.migrations_root / "004_public_api.sql"),
             (5, self.migrations_root / "005_community.sql"),
+            (6, self.migrations_root / "006_teams.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
+                try:
+                    applied = connection.execute("SELECT 1 FROM schema_migrations WHERE version=?", (version,)).fetchone()
+                except sqlite3.OperationalError:
+                    applied = None
+                if applied is not None:
+                    continue
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version == 6 else None
+                if version == 6 and current_version == 5:
+                    connection.commit()
+                    self._backup_before_v6(connection)
                 connection.executescript(path.read_text(encoding="utf-8"))
                 connection.execute(
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
+                if version == 6 and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError("migration 006 integrity check failed")
         self._secure_database()
         return self.schema_version()
 
-    def rollback(self, version: int = 5) -> None:
-        if version not in {1, 2, 3, 4, 5}:
+    def _backup_before_v6(self, source: sqlite3.Connection) -> None:
+        backup = self.path.with_suffix(self.path.suffix + ".pre-v6.backup")
+        temporary = backup.with_suffix(backup.suffix + ".tmp")
+        if backup.is_symlink() or temporary.is_symlink():
+            raise RuntimeError("unsafe database backup path")
+        temporary.unlink(missing_ok=True)
+        try:
+            target = sqlite3.connect(temporary)
+            try:
+                source.backup(target)
+                if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError("database backup integrity check failed")
+                target.commit()
+            finally:
+                target.close()
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, backup)
+            os.chmod(backup, 0o600)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def rollback(self, version: int = 6) -> None:
+        if version not in {1, 2, 3, 4, 5, 6}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -84,13 +118,27 @@ class SQLiteRepository:
             return 0
         return int(row["version"]) if row is not None else 0
 
-    def ensure_user(self, external_hash: str) -> None:
+    def ensure_user(self, external_hash: str) -> int:
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR IGNORE INTO users(external_hash, created_at, status) VALUES(?, ?, 'ACTIVE')",
                 (external_hash, utc_now()),
             )
+            row = connection.execute("SELECT id FROM users WHERE external_hash=?", (external_hash,)).fetchone()
         self._secure_database()
+        if row is None:
+            raise RuntimeError("user unavailable")
+        return int(row["id"])
+
+    def ensure_team_user(self, external_hash: str, *, email_hash: str | None = None, display_name: str | None = None) -> int:
+        user_id = self.ensure_user(external_hash)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE users SET email_hash=COALESCE(email_hash,?),display_name=COALESCE(display_name,?) WHERE id=?",
+                (email_hash, display_name, user_id),
+            )
+        self._secure_database()
+        return user_id
 
     def upsert_task(self, task: dict[str, Any]) -> None:
         owner = str(task["owner_namespace"])
@@ -188,7 +236,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 5
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 6
         except sqlite3.Error:
             return False
 
@@ -283,6 +331,27 @@ class SQLiteRepository:
         with self._connect() as connection:
             rows = connection.execute(query, tuple(values)).fetchall()
         return [dict(row) for row in rows]
+
+    def consume_team_approval(self, owner: str, approval_id: str, action_type: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status,action_type,expires_at FROM approvals WHERE owner=? AND id=?",
+                (owner, approval_id),
+            ).fetchone()
+            if row is None or row["status"] != "APPROVED" or row["action_type"] != action_type:
+                return False
+            try:
+                expires = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
+            except ValueError:
+                return False
+            if expires <= datetime.now(timezone.utc):
+                return False
+            changed = connection.execute(
+                "UPDATE approvals SET status='CONSUMED' WHERE owner=? AND id=? AND status='APPROVED'",
+                (owner, approval_id),
+            ).rowcount
+        self._secure_database()
+        return changed == 1
 
     def list_audit(
         self,
@@ -624,6 +693,235 @@ class SQLiteRepository:
                     delivery["request_id"], int(delivery["attempt"]), delivery["status"], utc_now(),
                 ),
             )
+
+    def create_organization(self, organization_id: str, owner_external_hash: str, name: str) -> dict[str, Any]:
+        owner_id = self.ensure_team_user(owner_external_hash)
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO organizations(id,name,owner_id,status,created_at,updated_at) VALUES(?,?,?,'ACTIVE',?,?)",
+                (organization_id, name[:120], owner_id, now, now),
+            )
+        self._secure_database()
+        return {"id": organization_id, "name": name[:120], "status": "ACTIVE", "created_at": now, "updated_at": now}
+
+    def list_organizations_for_user(self, external_hash: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT o.id,o.name,o.status,o.created_at,o.updated_at,CASE WHEN o.owner_id=u.id THEN 'OWNER' ELSE NULL END owner_role "
+                "FROM organizations o JOIN users u ON u.external_hash=? LEFT JOIN workspaces w ON w.organization_id=o.id "
+                "LEFT JOIN workspace_members m ON m.workspace_id=w.id AND m.user_id=u.id AND m.status='ACTIVE' "
+                "WHERE o.owner_id=u.id OR m.id IS NOT NULL ORDER BY o.created_at",
+                (external_hash,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_organization(self, organization_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT id,name,owner_id,status,created_at,updated_at FROM organizations WHERE id=?", (organization_id,)).fetchone()
+        return None if row is None else dict(row)
+
+    def user_id(self, external_hash: str) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT id FROM users WHERE external_hash=? AND status='ACTIVE'", (external_hash,)).fetchone()
+        return None if row is None else int(row["id"])
+
+    def organization_role(self, external_hash: str, organization_id: str) -> str | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT CASE WHEN o.owner_id=u.id THEN 'OWNER' ELSE (SELECT m.role FROM workspace_members m JOIN workspaces w ON w.id=m.workspace_id JOIN roles r ON r.id=m.role WHERE m.user_id=u.id AND m.status='ACTIVE' AND w.organization_id=o.id ORDER BY r.rank DESC LIMIT 1) END role "
+                "FROM organizations o JOIN users u ON u.external_hash=? WHERE o.id=? AND o.status='ACTIVE'",
+                (external_hash, organization_id),
+            ).fetchone()
+        return None if row is None or row["role"] is None else str(row["role"])
+
+    def set_organization_status(self, organization_id: str, status: str) -> None:
+        if status not in {"ACTIVE", "SUSPENDED", "ARCHIVED"}:
+            raise ValueError("invalid organization status")
+        with self._connect() as connection:
+            changed = connection.execute("UPDATE organizations SET status=?,updated_at=? WHERE id=?", (status, utc_now(), organization_id)).rowcount
+        if changed != 1:
+            raise KeyError("organization unavailable")
+
+    def create_workspace(self, workspace_id: str, organization_id: str, creator_external_hash: str, name: str, description: str, creator_role: str = "OWNER") -> dict[str, Any]:
+        if creator_role not in {"OWNER", "ADMIN", "MANAGER", "OPERATOR", "VIEWER"}:
+            raise ValueError("invalid workspace role")
+        user_id = self.ensure_team_user(creator_external_hash)
+        now = utc_now()
+        member_id = "MEM-" + hashlib.sha256(f"{workspace_id}:{user_id}".encode()).hexdigest()[:12].upper()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO workspaces(id,organization_id,name,description,status,created_at) VALUES(?,?,?,?, 'ACTIVE',?)",
+                (workspace_id, organization_id, name[:120], description[:1000], now),
+            )
+            connection.execute(
+                "INSERT INTO workspace_members(id,workspace_id,user_id,role,status,created_at) VALUES(?,?,?,?, 'ACTIVE',?)",
+                (member_id, workspace_id, user_id, creator_role, now),
+            )
+        self._secure_database()
+        return {"id": workspace_id, "organization_id": organization_id, "name": name[:120], "description": description[:1000], "status": "ACTIVE", "created_at": now}
+
+    def membership(self, external_hash: str, workspace_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT m.id,m.role,m.status,m.user_id,w.organization_id,w.status workspace_status,o.status organization_status "
+                "FROM workspace_members m JOIN users u ON u.id=m.user_id JOIN workspaces w ON w.id=m.workspace_id "
+                "JOIN organizations o ON o.id=w.organization_id WHERE u.external_hash=? AND m.workspace_id=? AND m.status='ACTIVE'",
+                (external_hash, workspace_id),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def list_workspaces_for_user(self, external_hash: str, organization_id: str | None = None) -> list[dict[str, Any]]:
+        query = (
+            "SELECT w.id,w.organization_id,w.name,w.description,w.status,w.created_at,m.role,"
+            "(SELECT COUNT(*) FROM workspace_members x WHERE x.workspace_id=w.id AND x.status='ACTIVE') members,"
+            "(SELECT COUNT(*) FROM tasks t WHERE t.workspace_id=w.id) tasks,"
+            "(SELECT COUNT(*) FROM workspace_agents a WHERE a.workspace_id=w.id AND a.enabled=1) agents,"
+            "(SELECT COUNT(*) FROM workspace_skills s WHERE s.workspace_id=w.id AND s.enabled=1) skills "
+            "FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id JOIN users u ON u.id=m.user_id "
+            "WHERE u.external_hash=? AND m.status='ACTIVE'"
+        )
+        values: list[Any] = [external_hash]
+        if organization_id:
+            query += " AND w.organization_id=?"
+            values.append(organization_id)
+        query += " ORDER BY w.created_at"
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(values)).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_workspace_component(self, workspace_id: str, component_type: str, component_id: str, enabled: bool) -> None:
+        if component_type not in {"agent", "skill"}:
+            raise ValueError("invalid workspace component")
+        table = "workspace_agents" if component_type == "agent" else "workspace_skills"
+        column = "agent_id" if component_type == "agent" else "skill_id"
+        with self._connect() as connection:
+            connection.execute(
+                f"INSERT INTO {table}(workspace_id,{column},enabled) VALUES(?,?,?) ON CONFLICT(workspace_id,{column}) DO UPDATE SET enabled=excluded.enabled",
+                (workspace_id, component_id, int(enabled)),
+            )
+        self._secure_database()
+
+    def list_workspace_components(self, workspace_id: str, component_type: str) -> list[str]:
+        if component_type not in {"agent", "skill"}:
+            raise ValueError("invalid workspace component")
+        table = "workspace_agents" if component_type == "agent" else "workspace_skills"
+        column = "agent_id" if component_type == "agent" else "skill_id"
+        with self._connect() as connection:
+            rows = connection.execute(f"SELECT {column} value FROM {table} WHERE workspace_id=? AND enabled=1 ORDER BY {column}", (workspace_id,)).fetchall()
+        return [str(row["value"]) for row in rows]
+
+    def upsert_workspace_member(self, member_id: str, workspace_id: str, user_id: int, role: str) -> dict[str, Any]:
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO workspace_members(id,workspace_id,user_id,role,status,created_at) VALUES(?,?,?,?, 'ACTIVE',?) "
+                "ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=excluded.role,status='ACTIVE'",
+                (member_id, workspace_id, user_id, role, now),
+            )
+            row = connection.execute("SELECT id,workspace_id,user_id,role,status,created_at FROM workspace_members WHERE workspace_id=? AND user_id=?", (workspace_id, user_id)).fetchone()
+        self._secure_database()
+        return dict(row)
+
+    def set_workspace_member(self, workspace_id: str, user_id: int, *, role: str | None = None, status: str | None = None) -> None:
+        if role is None and status is None:
+            return
+        clauses: list[str] = []
+        values: list[Any] = []
+        if role is not None:
+            clauses.append("role=?")
+            values.append(role)
+        if status is not None:
+            clauses.append("status=?")
+            values.append(status)
+        values.extend((workspace_id, user_id))
+        with self._connect() as connection:
+            changed = connection.execute(f"UPDATE workspace_members SET {','.join(clauses)} WHERE workspace_id=? AND user_id=?", tuple(values)).rowcount
+        if changed != 1:
+            raise KeyError("member unavailable")
+
+    def list_workspace_members(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT m.id,m.user_id,m.role,m.status,m.created_at,COALESCE(u.display_name,'Member') display_name "
+                "FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? ORDER BY m.created_at",
+                (workspace_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_knowledge_document(self, document: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO knowledge_documents(id,workspace_id,name,type,access_level,content,content_hash,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (document["id"], document["workspace_id"], document["name"], document["type"], document["access_level"], document["content"], document["content_hash"], document["created_by"], document["created_at"]),
+            )
+        self._secure_database()
+
+    def list_knowledge_documents(self, workspace_id: str, allowed_levels: tuple[str, ...]) -> list[dict[str, Any]]:
+        placeholders = ",".join("?" for _ in allowed_levels)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT id,name,type,access_level,content,content_hash,created_at FROM knowledge_documents WHERE workspace_id=? AND access_level IN ({placeholders}) ORDER BY created_at",
+                (workspace_id, *allowed_levels),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def attach_task_workspace(self, task_id: str, organization_id: str, workspace_id: str, creator_id: int, assignee_id: int | None = None) -> None:
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE tasks SET organization_id=?,workspace_id=?,creator_id=?,assignee_id=? WHERE id=?",
+                (organization_id, workspace_id, creator_id, assignee_id, task_id),
+            ).rowcount
+        if changed != 1:
+            raise KeyError("task unavailable")
+
+    def get_team_task(self, workspace_id: str, task_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id,title,status,progress,agent,created_at,updated_at,completed_at,result_summary,error_code,organization_id,workspace_id,creator_id,assignee_id FROM tasks WHERE workspace_id=? AND id=?",
+                (workspace_id, task_id),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def list_team_tasks(self, workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,title,status,progress,agent,created_at,updated_at,completed_at,result_summary,error_code,organization_id,workspace_id,creator_id,assignee_id FROM tasks WHERE workspace_id=? ORDER BY updated_at DESC LIMIT ?",
+                (workspace_id, max(1, min(200, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_task_comment(self, comment: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO task_comments(id,task_id,workspace_id,author_id,message,created_at) VALUES(?,?,?,?,?,?)",
+                (comment["id"], comment["task_id"], comment["workspace_id"], comment["author_id"], comment["message"], comment["created_at"]),
+            )
+        self._secure_database()
+
+    def list_task_comments(self, workspace_id: str, task_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT c.id,c.task_id,c.message,c.created_at,COALESCE(u.display_name,'Member') author FROM task_comments c JOIN users u ON u.id=c.author_id WHERE c.workspace_id=? AND c.task_id=? ORDER BY c.created_at",
+                (workspace_id, task_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_activity(self, event: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO activity_events(id,organization_id,workspace_id,event,actor_id,resource_id,payload,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (event["id"], event["organization_id"], event.get("workspace_id"), event["event"], event.get("actor_id"), event.get("resource_id"), json.dumps(event.get("payload", {}), separators=(",", ":")), event["created_at"]),
+            )
+        self._secure_database()
+
+    def list_activity(self, workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,event,resource_id,payload,created_at FROM activity_events WHERE workspace_id=? ORDER BY created_at DESC LIMIT ?",
+                (workspace_id, max(1, min(200, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def record_metric(self, metric_type: str, value: float, *, owner: str | None = None, labels: dict[str, Any] | None = None) -> None:
         safe_labels = {str(key)[:40]: str(item)[:100] for key, item in (labels or {}).items() if str(key) not in {"token", "secret", "authorization"}}

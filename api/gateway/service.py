@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from nexora.api.auth import APIKeyPrincipal
-from nexora.api.schemas import APIValidationError, validate_task_create, validate_webhook_create
+from nexora.api.schemas import APIValidationError, validate_invite, validate_knowledge, validate_task_create, validate_webhook_create, validate_workspace_create
+from nexora.collaboration import TeamAccessDenied, TeamValidationError
 from nexora.security.audit.redaction import redact_text
 from nexora.skills import SkillRegistryError
 from nexora.templates import TemplateApprovalRequired, TemplateRegistryError
@@ -20,12 +21,13 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
         self.templates = templates
         self.playground = playground
+        self.teams = teams
         self.policy = policy
         self.tasks = tasks
         self.approvals = approvals
@@ -49,9 +51,16 @@ class APIGateway:
             raise APIGatewayError(403, "SKILL_UNAVAILABLE", "Skill недоступен") from exc
         if skill.agent != payload["agent"]:
             raise APIGatewayError(403, "SKILL_AGENT_MISMATCH", "Skill недоступен выбранному агенту")
+        if payload.get("workspace_id"):
+            try:
+                self.teams.authorize_task(principal.owner, payload["workspace_id"], payload["agent"], payload["skill"])
+            except TeamAccessDenied as exc:
+                raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
         task = self.tasks.create(principal.owner, payload["title"], f"api-{request_id[:24]}")
         task = self.tasks.update_fields(principal.owner, task["task_id"], assigned_agent=payload["agent"].title())
         task = self.tasks.transition(principal.owner, task["task_id"], "QUEUED", stage="Ожидание обработки API", progress=25, event="API_QUEUED")
+        if payload.get("workspace_id"):
+            self.teams.link_task(principal.owner, payload["workspace_id"], task["task_id"])
         self.metrics.task_created(principal.owner, payload["agent"], payload["skill"])
         return {"task_id": task["task_id"], "status": task["status"]}
 
@@ -60,7 +69,12 @@ class APIGateway:
             limit = max(1, min(100, int(query.get("limit", "50"))))
         except ValueError as exc:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Некорректный лимит") from exc
-        return {"items": [self._task(item) for item in self.database.list_tasks(principal.owner, limit=limit)]}
+        workspace_id = query.get("workspace_id")
+        try:
+            items = self.teams.list_tasks(principal.owner, workspace_id, limit) if workspace_id else self.database.list_tasks(principal.owner, limit=limit)
+        except TeamAccessDenied as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        return {"items": [self._task(item) for item in items]}
 
     def get_task(self, principal: APIKeyPrincipal, task_id: str) -> dict[str, Any]:
         value = self.database.get_task_details(principal.owner, task_id)
@@ -68,16 +82,83 @@ class APIGateway:
             raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
         return self._task(value)
 
-    def list_agents(self) -> dict[str, Any]:
+    def list_organizations(self, principal: APIKeyPrincipal) -> dict[str, Any]:
+        return {"items": self.teams.list_organizations(principal.owner)}
+
+    def list_workspaces(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        return {"items": self.teams.list_workspaces(principal.owner, query.get("organization_id") or None)}
+
+    def create_workspace(self, principal: APIKeyPrincipal, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            payload = validate_workspace_create(value)
+            return self.teams.create_workspace(principal.owner, payload["organization_id"], payload["name"], payload["description"])
+        except APIValidationError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid workspace request") from exc
+        except TeamAccessDenied as exc:
+            raise APIGatewayError(404, "ORGANIZATION_NOT_FOUND", "Organization not found or unavailable") from exc
+
+    def list_members(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            return {"items": self.teams.list_members(principal.owner, str(query.get("workspace_id") or ""))}
+        except TeamAccessDenied as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+
+    def invite_member(self, principal: APIKeyPrincipal, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            payload = validate_invite(value)
+            return self.teams.invite(principal.owner, payload["workspace_id"], payload["email_hash"], payload["display_name"], payload["role"], approval_id=payload["approval_id"])
+        except APIValidationError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid invite request") from exc
+        except (TeamAccessDenied, TeamValidationError) as exc:
+            raise APIGatewayError(403, "ACCESS_DENIED", "Invite denied") from exc
+
+    def list_knowledge(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            return {"items": self.teams.list_knowledge(principal.owner, str(query.get("workspace_id") or ""))}
+        except TeamAccessDenied as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+
+    def add_knowledge(self, principal: APIKeyPrincipal, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            payload = validate_knowledge(value)
+            return self.teams.add_knowledge(principal.owner, payload["workspace_id"], payload)
+        except APIValidationError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid knowledge request") from exc
+        except TeamAccessDenied as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        except TeamValidationError as exc:
+            raise APIGatewayError(400, "KNOWLEDGE_VALIDATION_FAILED", "Knowledge document rejected") from exc
+
+    def list_agents(self, principal: APIKeyPrincipal | None = None, query: dict[str, str] | None = None) -> dict[str, Any]:
+        workspace_id = (query or {}).get("workspace_id")
+        allowed_ids: set[str] | None = None
+        if workspace_id:
+            if principal is None:
+                raise APIGatewayError(401, "UNAUTHORIZED", "Authentication required")
+            try:
+                allowed_ids = set(self.teams.components(principal.owner, workspace_id, "agent"))
+            except TeamAccessDenied as exc:
+                raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
         items = []
         for manifest in self.agents.all():
+            if allowed_ids is not None and manifest.id not in allowed_ids:
+                continue
             override = self.database.get_agent_override(manifest.id)
             enabled = manifest.enabled if override is None else override
             items.append({"id": manifest.id, "status": "ACTIVE" if enabled else "DISABLED"})
         return {"items": items}
 
-    def list_skills(self) -> dict[str, Any]:
-        return {"items": [{"id": item["id"], "version": item["version"], "agent": item["agent"], "status": item["status"]} for item in self.skills.list()]}
+    def list_skills(self, principal: APIKeyPrincipal | None = None, query: dict[str, str] | None = None) -> dict[str, Any]:
+        workspace_id = (query or {}).get("workspace_id")
+        allowed_ids: set[str] | None = None
+        if workspace_id:
+            if principal is None:
+                raise APIGatewayError(401, "UNAUTHORIZED", "Authentication required")
+            try:
+                allowed_ids = set(self.teams.components(principal.owner, workspace_id, "skill"))
+            except TeamAccessDenied as exc:
+                raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        return {"items": [{"id": item["id"], "version": item["version"], "agent": item["agent"], "status": item["status"]} for item in self.skills.list() if allowed_ids is None or item["id"] in allowed_ids]}
 
     def list_templates(self) -> dict[str, Any]:
         return {"items": self.templates.list()}

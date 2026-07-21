@@ -19,6 +19,7 @@ from nexora.agents.registry import AgentRegistry
 from nexora.dashboard.api import DashboardAPI, DashboardAPIError
 from nexora.dashboard.auth import AuthService, BruteForceProtector, Session, SessionManager
 from nexora.dashboard.permissions import DashboardPermissions
+from nexora.collaboration import TeamService
 from nexora.database import SQLiteRepository
 from nexora.integrations.telegram_runtime.services.approval_service import ApprovalService
 from nexora.integrations.telegram_runtime.services.audit_service import AuditService
@@ -133,7 +134,9 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     metrics = MetricsService(database)
     templates = TemplateRegistry(config.project_root / "templates", database=database, agents=registry, skills=skills, policy=policy, audit=audit, metrics=metrics).load()
     playground = PlaygroundService(audit)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground)
+    teams = TeamService(database, policy, audit)
+    teams.bootstrap_personal(namespace)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -157,7 +160,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/2.1"
+    server_version = "NexoraDashboard/2.2"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -284,6 +287,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.list_templates()
             elif path == "/api/playground/examples":
                 response = self.app.api.playground_examples()
+            elif path == "/api/organizations":
+                response = self.app.api.list_organizations()
+            elif path == "/api/workspaces":
+                response = self.app.api.list_workspaces(query)
+            elif path == "/api/members":
+                response = self.app.api.list_members(query)
+            elif path == "/api/knowledge":
+                response = self.app.api.list_knowledge(query)
             elif path == "/api/approvals":
                 response = self.app.api.list_approvals(query)
             elif path == "/api/audit":
@@ -360,6 +371,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "templates:read"
             if path == "/api/playground/examples":
                 return "playground:read"
+            if path == "/api/organizations":
+                return "organizations:read"
+            if path == "/api/workspaces":
+                return "workspaces:read"
+            if path == "/api/members":
+                return "members:read"
+            if path == "/api/knowledge":
+                return "knowledge:read"
             if path == "/api/approvals":
                 return "approvals:read"
             if path == "/api/audit":
@@ -424,7 +443,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})

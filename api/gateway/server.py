@@ -14,6 +14,7 @@ from nexora.api.auth import APIKeyService
 from nexora.api.gateway.service import APIGateway, APIGatewayError
 from nexora.api.middleware import request_context
 from nexora.api.rate_limit import APIRateLimiter
+from nexora.collaboration import TeamService
 from nexora.database import SQLiteRepository
 from nexora.integrations.telegram_runtime.services.approval_service import ApprovalService
 from nexora.integrations.telegram_runtime.services.audit_service import AuditService
@@ -39,6 +40,13 @@ ROUTES = {
     ("GET", "/api/v1/skills"): ("skills:read", 60),
     ("GET", "/api/v1/templates"): ("templates:read", 60),
     ("GET", "/api/v1/playground/examples"): ("playground:read", 60),
+    ("GET", "/api/v1/organizations"): ("organizations:read", 60),
+    ("GET", "/api/v1/workspaces"): ("workspaces:read", 60),
+    ("POST", "/api/v1/workspaces"): ("workspaces:write", 10),
+    ("GET", "/api/v1/members"): ("members:read", 60),
+    ("POST", "/api/v1/invite"): ("members:invite", 10),
+    ("GET", "/api/v1/knowledge"): ("knowledge:read", 60),
+    ("POST", "/api/v1/knowledge"): ("knowledge:write", 10),
     ("POST", "/api/v1/webhooks"): ("webhooks:manage", 10),
     ("GET", "/api/v1/webhooks"): ("webhooks:manage", 30),
 }
@@ -85,7 +93,7 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
         database=database,
         audit=audit,
         agent_registry=agents,
-        platform_version="2.1.0",
+        platform_version="2.2.0",
     ).load()
     events = EventBus([SQLiteEventSink(database)])
     tasks = TaskService(TaskRepository(config.state_root / "tasks"), database=database, event_bus=events)
@@ -94,7 +102,8 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
     metrics = MetricsService(database)
     templates = TemplateRegistry(config.project_root / "templates", database=database, agents=agents, skills=skills, policy=policy, audit=audit, metrics=metrics).load()
     playground = PlaygroundService(audit)
-    gateway = APIGateway(database, agents, skills, templates, playground, policy, tasks, approvals, webhooks, metrics)
+    teams = TeamService(database, policy, audit)
+    gateway = APIGateway(database, agents, skills, templates, playground, teams, policy, tasks, approvals, webhooks, metrics)
     return PublicAPIApplication(gateway, APIKeyService(database), APIRateLimiter(), audit, metrics)
 
 
@@ -118,7 +127,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/2.1"
+    server_version = "NexoraAPI/2.2"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -177,10 +186,10 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.gateway.get_task(principal, task_match.group(1))
                 status = 200
             elif method == "GET" and path == "/api/v1/agents":
-                response = self.app.gateway.list_agents()
+                response = self.app.gateway.list_agents(principal, query)
                 status = 200
             elif method == "GET" and path == "/api/v1/skills":
-                response = self.app.gateway.list_skills()
+                response = self.app.gateway.list_skills(principal, query)
                 status = 200
             elif method == "GET" and path == "/api/v1/templates":
                 response = self.app.gateway.list_templates()
@@ -194,6 +203,27 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             elif method == "GET" and path == "/api/v1/playground/examples":
                 response = self.app.gateway.playground_examples()
                 status = 200
+            elif method == "GET" and path == "/api/v1/organizations":
+                response = self.app.gateway.list_organizations(principal)
+                status = 200
+            elif method == "GET" and path == "/api/v1/workspaces":
+                response = self.app.gateway.list_workspaces(principal, query)
+                status = 200
+            elif method == "POST" and path == "/api/v1/workspaces":
+                response = self.app.gateway.create_workspace(principal, self._body())
+                status = 201
+            elif method == "GET" and path == "/api/v1/members":
+                response = self.app.gateway.list_members(principal, query)
+                status = 200
+            elif method == "POST" and path == "/api/v1/invite":
+                response = self.app.gateway.invite_member(principal, self._body())
+                status = 201
+            elif method == "GET" and path == "/api/v1/knowledge":
+                response = self.app.gateway.list_knowledge(principal, query)
+                status = 200
+            elif method == "POST" and path == "/api/v1/knowledge":
+                response = self.app.gateway.add_knowledge(principal, self._body())
+                status = 201
             elif method == "POST" and path == "/api/v1/webhooks":
                 response = self.app.gateway.request_webhook(principal, self._body(), context.request_id)
                 status = 202

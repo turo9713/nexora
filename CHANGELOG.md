@@ -2,6 +2,22 @@
 
 All notable changes follow Semantic Versioning.
 
+## [2.2.0] - 2026-07-21
+
+### Added
+
+- Organization and workspace tenancy with hashed external user identities and fail-closed RBAC.
+- Workspace-scoped members, agents, skills, tasks, knowledge documents, comments, and activity events.
+- Authenticated Dashboard and scoped Public API views for organizations, workspaces, members, and knowledge.
+- Reversible SQLite migration 006 plus tenant-isolation, role-escalation, approval-replay, and data-leakage tests.
+
+### Security
+
+- Every workspace resource lookup verifies active organization membership and the required role capability.
+- Membership and component changes consume an exact, expiring, one-time approval through the existing Policy Engine.
+- Knowledge ingestion rejects secret-like content; tenant audit metadata is redacted and contains no raw external identity.
+- Existing single-owner data remains intact and production services require no infrastructure or Gateway change.
+
 ## [2.1.0] - 2026-07-21
 
 ### Added
