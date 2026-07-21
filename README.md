@@ -3,7 +3,8 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 2.0 is the first public release. The repository contains the open-source
+Nexora 2.1 adds reviewed workflow templates, a safe Playground, community-skill
+submission structure, onboarding, and public examples. The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -18,6 +19,8 @@ deliberately outside the public boundary.
 - Owner-isolated Telegram adapter, authenticated dashboard, and scoped API keys.
 - SQLite storage with reversible migrations and retained JSON compatibility.
 - Signed HTTPS webhooks, read-only GitHub integration, and safe content drafts.
+- Declarative workflow templates with owner-isolated, reversible installation.
+- A data-only Playground and review-first Community Skills contribution flow.
 
 ## Architecture
 
@@ -84,6 +87,14 @@ no network request and no production action.
 
 See [Getting Started](docs/getting-started.md) for health checks and safe local
 access.
+
+## Templates and Playground
+
+Use the authenticated Dashboard sections `/templates` and `/playground`, or the
+scoped `/api/v1/templates` and `/api/v1/playground/examples` endpoints. Templates
+cannot add permissions; medium-risk templates wait for an existing one-time
+approval. See [templates](docs/templates.md), [Playground](docs/playground.md),
+and [community skills](docs/community-skills.md).
 
 ## Security
 

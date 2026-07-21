@@ -17,5 +17,14 @@ class MetricsService:
     def webhook_delivery(self, owner: str, success: bool) -> None:
         self.database.record_metric("webhook_delivery", 1 if success else 0, owner=owner)
 
+    def template_installed(self, owner: str, template_id: str) -> None:
+        self.database.record_metric("template_install", 1, owner=owner, labels={"template": template_id})
+
+    def demo_completed(self, owner: str, example_id: str) -> None:
+        self.database.record_metric("demo_completed", 1, owner=owner, labels={"example": example_id})
+
+    def community_summary(self, owner: str) -> dict[str, int]:
+        return self.database.community_metrics(owner)
+
     def summary(self, owner: str) -> dict[str, Any]:
         return self.database.metrics_summary(owner)

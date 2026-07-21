@@ -1,0 +1,16 @@
+id: analytics-report
+name: Analytics Report
+version: 1.0.0
+description: Analyze read-only workspace data and produce a reviewed report.
+agents: [analytics, qa]
+skills: [analytics]
+permissions:
+  level: LOW
+  filesystem: workspace-read-only
+  network: none
+  production: false
+approval_required: false
+created_by: Nexora
+status: ACTIVE
+compatibility:
+  min_platform: 2.1.0

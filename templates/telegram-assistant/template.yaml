@@ -1,0 +1,16 @@
+id: telegram-assistant
+name: Telegram Assistant
+version: 1.0.0
+description: Prepare Telegram assistant drafts without sending external messages.
+agents: [orchestrator, content, qa]
+skills: [content-writer]
+permissions:
+  level: MEDIUM
+  filesystem: workspace-drafts
+  network: none
+  production: false
+approval_required: true
+created_by: Nexora
+status: DISABLED
+compatibility:
+  min_platform: 2.1.0

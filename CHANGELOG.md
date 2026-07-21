@@ -2,6 +2,21 @@
 
 All notable changes follow Semantic Versioning.
 
+## [2.1.0] - 2026-07-21
+
+### Added
+
+- Declarative Workflow Template Registry with five reviewed built-ins and a reversible owner-scoped installation model.
+- Authenticated Dashboard and scoped API endpoints for templates and the safe, data-only Playground.
+- Community Skills submission structure, onboarding flow, four public demos, and anonymous community metrics.
+- Reversible SQLite migration 005 and template security, integration, API, and migration tests.
+
+### Security
+
+- Templates cannot contain executable fields, secrets, Docker/root access, environment values, or production permissions.
+- Playground provides examples only; it has no execution, external writes, publication, secrets, or production tools.
+- Medium-risk template installation reuses the existing one-time Approval and Policy Engine path.
+
 ## [2.0.0] - 2026-07-21
 
 ### Added

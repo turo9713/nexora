@@ -34,6 +34,7 @@ def test_health_tasks_idor_and_redaction(dashboard_factory) -> None:
     health = app.api.health()
     assert health["runtime"] == "OK"
     assert health["gateway"] == "OK" and health["telegram"] == "OK"
+    assert health["templates"]["ok"] is True
     listed = app.api.list_tasks({})["items"]
     assert [item["id"] for item in listed] == ["NX-OWNER-001"]
     details = app.api.task_details("NX-OWNER-001")
@@ -41,6 +42,21 @@ def test_health_tasks_idor_and_redaction(dashboard_factory) -> None:
     with pytest.raises(DashboardAPIError) as denied:
         app.api.task_details("NX-FOREIGN-001")
     assert denied.value.status == 404
+
+
+def test_templates_playground_and_approval_reuse_existing_engine(dashboard_factory) -> None:
+    app, _ = dashboard_factory()
+    items = app.api.list_templates()["items"]
+    assert any(item["id"] == "content-factory" for item in items)
+    direct = app.api.request_template_install("code-review", "template-session-direct")
+    assert direct["status"] == "ACTIVE"
+    pending = app.api.request_template_install("content-factory", "template-session-approval")
+    assert pending["status"] == "WAITING_APPROVAL"
+    approved = app.api.decide_approval(pending["approval_id"], "approve")
+    assert approved["execution"] == "COMPLETED"
+    assert any(item["template_id"] == "content-factory" for item in app.api.database.list_template_installations(NAMESPACE))
+    playground = app.api.playground_examples()
+    assert playground["mode"] == "SANDBOX_ONLY" and playground["production_tools"] is False
 
 
 def test_agent_change_requires_existing_approval_engine(dashboard_factory) -> None:

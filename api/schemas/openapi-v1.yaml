@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 1.0.0
+  version: 1.1.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
@@ -40,6 +40,30 @@ paths:
       operationId: listSkills
       responses:
         "200": {description: Safe skill states}
+  /templates:
+    get:
+      operationId: listTemplates
+      responses:
+        "200": {description: Validated workflow templates}
+  /templates/{id}:
+    get:
+      operationId: getTemplate
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Safe template manifest}
+        "404": {description: Template not found or unavailable}
+    post:
+      operationId: installTemplate
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "202": {description: Installed or waiting for approval}
+  /playground/examples:
+    get:
+      operationId: listPlaygroundExamples
+      responses:
+        "200": {description: Sandbox-only example catalogue}
   /webhooks:
     get:
       operationId: listWebhooks

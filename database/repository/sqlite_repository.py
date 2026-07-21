@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ class SQLiteRepository:
             (2, self.migrations_root / "002_dashboard.sql"),
             (3, self.migrations_root / "003_skills.sql"),
             (4, self.migrations_root / "004_public_api.sql"),
+            (5, self.migrations_root / "005_community.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -62,13 +64,13 @@ class SQLiteRepository:
         self._secure_database()
         return self.schema_version()
 
-    def rollback(self, version: int = 4) -> None:
-        if version not in {1, 2, 3, 4}:
+    def rollback(self, version: int = 5) -> None:
+        if version not in {1, 2, 3, 4, 5}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -186,7 +188,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 4
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 5
         except sqlite3.Error:
             return False
 
@@ -631,6 +633,140 @@ class SQLiteRepository:
                 (owner, str(metric_type)[:100], float(value), json.dumps(safe_labels, separators=(",", ":")), utc_now()),
             )
         self._secure_database()
+
+    def register_template(self, manifest: Any, *, initial_status: str) -> bool:
+        now = utc_now()
+        with self._connect() as connection:
+            exists = connection.execute("SELECT 1 FROM templates WHERE id=?", (manifest.id,)).fetchone() is not None
+            if exists:
+                connection.execute(
+                    "UPDATE templates SET name=?,version=?,permission_level=?,approval_required=?,manifest_hash=?,updated_at=? WHERE id=?",
+                    (manifest.name, manifest.version, manifest.risk, int(manifest.approval_required), manifest.manifest_hash, now, manifest.id),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO templates(id,name,version,status,permission_level,approval_required,manifest_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (manifest.id, manifest.name, manifest.version, initial_status, manifest.risk, int(manifest.approval_required), manifest.manifest_hash, now, now),
+                )
+        self._secure_database()
+        return not exists
+
+    def insert_template_event(self, template_id: str, event: str, result: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO template_events(template_id,event,result,created_at) VALUES(?,?,?,?)",
+                (template_id, str(event)[:80], str(result)[:80], utc_now()),
+            )
+        self._secure_database()
+
+    def set_template_status(self, template_id: str, status: str) -> None:
+        if status not in {"DISCOVERED", "VALIDATED", "ACTIVE", "DISABLED", "FAILED"}:
+            raise ValueError("invalid template status")
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE templates SET status=?,updated_at=? WHERE id=?",
+                (status, utc_now(), template_id),
+            ).rowcount
+        if changed != 1:
+            raise KeyError("template unavailable")
+        self._secure_database()
+
+    def get_template_status(self, template_id: str) -> str | None:
+        try:
+            with self._connect() as connection:
+                row = connection.execute("SELECT status FROM templates WHERE id=?", (template_id,)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return None if row is None else str(row["status"])
+
+    def template_exists(self, template_id: str) -> bool:
+        return self.get_template_status(template_id) is not None
+
+    def list_templates(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,name,version,status,permission_level,approval_required,created_at,updated_at FROM templates ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_template_details(self, template_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id,name,version,status,permission_level,approval_required,created_at,updated_at FROM templates WHERE id=?",
+                (template_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            events = connection.execute(
+                "SELECT event,result,created_at FROM template_events WHERE template_id=? ORDER BY created_at",
+                (template_id,),
+            ).fetchall()
+        result = dict(row)
+        result["events"] = [dict(item) for item in events]
+        return result
+
+    @staticmethod
+    def _installation_id(owner: str, template_id: str) -> str:
+        digest = hashlib.sha256(f"{owner}:{template_id}".encode("utf-8")).hexdigest()[:12].upper()
+        return f"INS-{digest}"
+
+    def install_template(self, owner: str, template_id: str, *, approval_id: str | None = None) -> dict[str, Any]:
+        now = utc_now()
+        installation_id = self._installation_id(owner, template_id)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO installations(id,template_id,owner,status,approval_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(template_id,owner) DO UPDATE SET status='ACTIVE',approval_id=excluded.approval_id,updated_at=excluded.updated_at",
+                (installation_id, template_id, owner, "ACTIVE", approval_id, now, now),
+            )
+            row = connection.execute(
+                "SELECT id,template_id,status,created_at,updated_at FROM installations WHERE owner=? AND template_id=?",
+                (owner, template_id),
+            ).fetchone()
+        self._secure_database()
+        return dict(row)
+
+    def rollback_template_installation(self, owner: str, template_id: str, approval_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE installations SET status='ROLLED_BACK',approval_id=?,updated_at=? WHERE owner=? AND template_id=? AND status='ACTIVE'",
+                (approval_id, utc_now(), owner, template_id),
+            ).rowcount
+            row = connection.execute(
+                "SELECT id,template_id,status,created_at,updated_at FROM installations WHERE owner=? AND template_id=?",
+                (owner, template_id),
+            ).fetchone()
+        if changed != 1 or row is None:
+            raise KeyError("installation unavailable")
+        self._secure_database()
+        return dict(row)
+
+    def list_template_installations(self, owner: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,template_id,status,created_at,updated_at FROM installations WHERE owner=? ORDER BY updated_at DESC",
+                (owner,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_template_installation(self, owner: str, template_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id,template_id,status,created_at,updated_at FROM installations WHERE owner=? AND template_id=?",
+                (owner, template_id),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def community_metrics(self, owner: str) -> dict[str, int]:
+        with self._connect() as connection:
+            installed = connection.execute(
+                "SELECT COUNT(*) FROM installations WHERE owner=? AND status='ACTIVE'", (owner,)
+            ).fetchone()[0]
+            active_skills = connection.execute("SELECT COUNT(*) FROM skills WHERE status='ACTIVE'").fetchone()[0]
+            demos = connection.execute(
+                "SELECT COALESCE(SUM(value),0) FROM metrics WHERE owner=? AND type='demo_completed'", (owner,)
+            ).fetchone()[0]
+        return {"installed_templates": int(installed), "active_skills": int(active_skills), "completed_demos": int(demos)}
 
     def metrics_summary(self, owner: str) -> dict[str, Any]:
         today = datetime.now(timezone.utc).date().isoformat()

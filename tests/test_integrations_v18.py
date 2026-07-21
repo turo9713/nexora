@@ -90,5 +90,6 @@ def test_metrics_tables_and_rollback_preserve_existing_data(tmp_path: Path) -> N
     db.record_metric("skill_call", 1, owner=OWNER, labels={"skill": "github-agent"})
     with sqlite3.connect(db.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 1
+    db.rollback(5)
     db.rollback(4)
     assert db.schema_version() == 3

@@ -1,0 +1,4 @@
+template: research-agent
+input: Compare safe approval models for autonomous agents.
+mode: sandbox
+external_writes: false

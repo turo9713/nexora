@@ -1,0 +1,16 @@
+id: content-factory
+name: Content Factory
+version: 1.0.0
+description: Research, draft, review, and require approval before any publication.
+agents: [research, content, qa]
+skills: [research, content-writer]
+permissions:
+  level: MEDIUM
+  filesystem: workspace-drafts
+  network: search-only
+  production: false
+approval_required: true
+created_by: Nexora
+status: ACTIVE
+compatibility:
+  min_platform: 2.1.0
