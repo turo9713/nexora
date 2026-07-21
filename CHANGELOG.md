@@ -2,6 +2,21 @@
 
 All notable changes follow Semantic Versioning.
 
+## [3.0.0] - 2026-07-21
+
+### Added
+
+- Approval-gated Agent Builder with immutable Manifest v2 versions.
+- Workspace-isolated Agent Teams, policy-checked planning, scoped Memory 2.0, and immutable agent evaluations.
+- Agent Center, Teams, Memory, Planning, Evaluation, and SDK Dashboard/API foundations.
+- Marketplace agent package kinds for single agents, teams, and AI departments.
+- Reversible SQLite migration 010 and Python SDK foundation.
+
+### Security
+
+- Agent requests now pass identity, tenant, RBAC, tool, memory-scope, Policy, Approval, and redacted Audit checks.
+- No arbitrary code loading, shell, root, Docker, secrets, Gateway exposure, or production mutation was introduced.
+
 ## [2.5.0] - 2026-07-21
 
 ### Added

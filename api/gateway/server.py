@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from nexora.agents.registry import AgentRegistry
+from nexora.agents import AgentEcosystem
 from nexora.api.auth import APIKeyService
 from nexora.api.gateway.service import APIGateway, APIGatewayError
 from nexora.api.middleware import request_context
@@ -58,6 +59,15 @@ ROUTES = {
     ("POST", "/api/v1/marketplace/publish"): ("marketplace:publish", 10),
     ("GET", "/api/v1/creator/packages"): ("creator:read", 60),
     ("GET", "/api/v1/creator/analytics"): ("creator:read", 60),
+    ("GET", "/api/v1/agent-definitions"): ("agent_ecosystem:read", 60),
+    ("POST", "/api/v1/agent-definitions"): ("agent_ecosystem:manage", 10),
+    ("GET", "/api/v1/agent-teams"): ("agent_ecosystem:read", 60),
+    ("POST", "/api/v1/agent-teams"): ("agent_ecosystem:manage", 10),
+    ("GET", "/api/v1/agent-plans"): ("agent_ecosystem:read", 60),
+    ("POST", "/api/v1/agent-plans"): ("agent_ecosystem:manage", 10),
+    ("GET", "/api/v1/agent-memory"): ("agent_ecosystem:read", 60),
+    ("GET", "/api/v1/agent-evaluations"): ("agent_ecosystem:read", 60),
+    ("GET", "/api/v1/sdk"): ("agent_ecosystem:read", 60),
     ("POST", "/api/v1/webhooks"): ("webhooks:manage", 10),
     ("GET", "/api/v1/webhooks"): ("webhooks:manage", 30),
 }
@@ -71,6 +81,7 @@ class PublicAPIConfig:
     state_root: Path = Path("/workspace/nexora/runtime/state/telegram_v14")
     database_path: Path = Path("/workspace/nexora/runtime/state/database/nexora.sqlite3")
     webhook_master_file: Path = Path("/run/secrets/api_webhook_master")
+    agent_memory_key_file: Path = Path("/run/secrets/agent_memory_key")
     tls_cert_file: Path | None = Path("/run/secrets/api_tls_cert")
     tls_key_file: Path | None = Path("/run/secrets/api_tls_key")
 
@@ -104,7 +115,7 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
         database=database,
         audit=audit,
         agent_registry=agents,
-        platform_version="2.5.0",
+        platform_version="3.0.0",
     ).load()
     events = EventBus([SQLiteEventSink(database)])
     tasks = TaskService(TaskRepository(config.state_root / "tasks"), database=database, event_bus=events)
@@ -117,7 +128,8 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
     billing = BillingFoundation(database, audit)
     marketplace = MarketplaceService(database, teams, policy, audit)
     creators = CreatorService(database, marketplace, teams, policy, audit)
-    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics)
+    ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_secret(config.agent_memory_key_file))
+    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics, ecosystem)
     return PublicAPIApplication(gateway, APIKeyService(database), APIRateLimiter(), audit, metrics)
 
 
@@ -141,7 +153,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/2.5"
+    server_version = "NexoraAPI/3.0"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -234,6 +246,13 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
                 status = 200
             elif method == "GET" and path == "/api/v1/creator/analytics":
                 response = self.app.gateway.creator_analytics(principal)
+                status = 200
+            elif path in {"/api/v1/agent-definitions", "/api/v1/agent-teams", "/api/v1/agent-plans", "/api/v1/agent-memory", "/api/v1/agent-evaluations"}:
+                resource = {"/api/v1/agent-definitions":"agents", "/api/v1/agent-teams":"teams", "/api/v1/agent-plans":"plans", "/api/v1/agent-memory":"memory", "/api/v1/agent-evaluations":"evaluations"}[path]
+                response = self.app.gateway.ecosystem_create(principal, resource, self._body()) if method == "POST" else self.app.gateway.ecosystem_list(principal, resource, query)
+                status = 201 if method == "POST" else 200
+            elif method == "GET" and path == "/api/v1/sdk":
+                response = {"language":"python", "mode":"in-process", "arbitrary_code":False, "policy_checked":True}
                 status = 200
             elif template_match and method == "GET":
                 response = self.app.gateway.get_template(template_match.group(1))

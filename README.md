@@ -3,8 +3,9 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 2.5 adds a Creator Economy control plane on top of the security-reviewed
-Marketplace for declarative, versioned Agents, Skills, Templates, and Integrations. The repository contains the open-source
+Nexora 3.0 adds an AI Agent Ecosystem on top of the security-reviewed Creator
+Marketplace: Agent Builder, Agent Teams, safe planning, Memory 2.0, evaluation,
+and a declarative SDK foundation. The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -31,6 +32,10 @@ deliberately outside the public boundary.
   reviews, and community-license metadata with no automatic code execution.
 - Owner-isolated creator profiles, immutable package releases, trusted-creator
   verification, quality scoring, and privacy-preserving creator analytics.
+- Approval-gated custom Agent Manifest v2 creation and immutable versions.
+- Workspace-scoped Agent Teams, policy-checked plans, three-level memory, and evaluations.
+- Marketplace packages for single agents, agent teams, and AI departments.
+- In-process Python SDK with no arbitrary code execution or Gateway credential.
 
 ## Architecture
 
@@ -150,6 +155,17 @@ require Policy Engine authorization, an exact one-time approval, and an audit
 event. See [Creator Guide](docs/creator-guide.md), [Creator Analytics](docs/analytics.md),
 [Verification](docs/verification.md), and [Publishing](docs/publishing.md).
 
+## AI Agent Ecosystem
+
+Use `/agent-center`, `/agent-teams`, `/agent-memory`, `/agent-planning`,
+`/agent-evaluations`, and `/sdk` in the authenticated Dashboard. Public API
+clients use the matching `/api/v1/agent-*` endpoints with explicit
+`agent_ecosystem:read` or `agent_ecosystem:manage` scopes. Agent and team
+mutations consume one-time approvals; plans are proposals and never execute by
+themselves. See [Agent Builder](docs/agent-builder.md), [Agent Teams](docs/agent-teams.md),
+[Memory 2.0](docs/memory.md), [Planning](docs/planning.md), [SDK](docs/sdk.md),
+and [Agent Security](docs/agent-security.md).
+
 ## Security
 
 Nexora is deny-by-default. Agents and skills cannot grant themselves new tools,
@@ -194,9 +210,9 @@ and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Roadmap
 
-- **v2.5:** expanded publisher trust and signed package provenance.
-- **v2.7:** curated integration bundles.
-- **v3.0:** optional managed cloud platform while preserving self-hosting.
+- **v3.1:** curated declarative agent/team bundles.
+- **v3.5:** expanded evaluation datasets and policy simulations.
+- **v4.0:** optional managed control plane while preserving self-hosting.
 
 ## Release and rollback
 

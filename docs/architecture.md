@@ -92,3 +92,9 @@ Core includes runtime, agents, skills, API, dashboard, security, database,
 events, tests, and safe examples. Production configuration, VPS automation,
 credentials, customer data, private integrations, and commercial skills remain
 outside this repository under the boundary documented in `extensions/README.md`.
+# Agent Ecosystem v3
+
+Agent Builder, Agent Teams, Planning, Memory, Evaluation, SDK and Agent Security
+are additive services above the existing workspace/RBAC, Policy, Approval,
+Audit, and SQLite layers. The Dashboard and Public API call the same service
+facade; neither bypasses policy or connects directly to OpenClaw.

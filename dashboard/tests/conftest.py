@@ -49,6 +49,7 @@ def dashboard_factory(tmp_path: Path):
             tls_cert_file=None,
             tls_key_file=None,
             webhook_master_file=files["webhook"],
+            agent_memory_key_file=files["webhook"],
             allowed_origins=(ORIGIN,),
             session_ttl_seconds=ttl,
         )

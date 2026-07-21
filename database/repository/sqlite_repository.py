@@ -57,6 +57,7 @@ class SQLiteRepository:
             (7, self.migrations_root / "007_cloud_billing.sql"),
             (8, self.migrations_root / "008_marketplace.sql"),
             (9, self.migrations_root / "009_creator_economy.sql"),
+            (10, self.migrations_root / "010_agent_ecosystem.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -66,8 +67,8 @@ class SQLiteRepository:
                     applied = None
                 if applied is not None:
                     continue
-                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9} else None
-                if version in {6, 7, 8, 9} and current_version == version - 1:
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10} else None
+                if version in {6, 7, 8, 9, 10} and current_version == version - 1:
                     connection.commit()
                     self._backup_before_version(connection, version)
                 connection.executescript(path.read_text(encoding="utf-8"))
@@ -75,7 +76,7 @@ class SQLiteRepository:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
-                if version in {6, 7, 8, 9} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                if version in {6, 7, 8, 9, 10} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError(f"migration {version:03d} integrity check failed")
         self._secure_database()
         return self.schema_version()
@@ -104,13 +105,13 @@ class SQLiteRepository:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def rollback(self, version: int = 9) -> None:
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
+    def rollback(self, version: int = 10) -> None:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -242,7 +243,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 9
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 10
         except sqlite3.Error:
             return False
 

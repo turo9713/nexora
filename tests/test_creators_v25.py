@@ -144,6 +144,7 @@ def test_migration_009_backup_integrity_and_rollback(tmp_path: Path) -> None:
     with sqlite3.connect(backup) as connection:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]==8
         assert connection.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
+    database.rollback(10)
     database.rollback(9)
     assert database.schema_version()==8
     with sqlite3.connect(database.path) as connection:
@@ -157,7 +158,7 @@ def test_creator_dashboard_is_authenticated_and_owner_scoped(tmp_path: Path) -> 
     password=secrets_root/"password"; session_key=secrets_root/"session"; namespace=secrets_root/"namespace"; webhook=secrets_root/"webhook"
     password.write_text(hash_password("creator-dashboard-password"),encoding="ascii")
     session_key.write_bytes(b"s"*32); namespace.write_text(CREATOR,encoding="ascii"); webhook.write_bytes(b"w"*32)
-    app=create_application(DashboardConfig(project_root=PROJECT,state_root=tmp_path/"state",database_path=tmp_path/"db"/"nexora.sqlite3",password_hash_file=password,session_key_file=session_key,owner_namespace_file=namespace,webhook_master_file=webhook,tls_cert_file=None,tls_key_file=None))
+    app=create_application(DashboardConfig(project_root=PROJECT,state_root=tmp_path/"state",database_path=tmp_path/"db"/"nexora.sqlite3",password_hash_file=password,session_key_file=session_key,owner_namespace_file=namespace,webhook_master_file=webhook,agent_memory_key_file=webhook,tls_cert_file=None,tls_key_file=None))
     assert not app.api.creator_dashboard()["configured"]
     created=app.api.create_creator_profile({"display_name":"Dashboard Creator","bio":"Safe"})
     view=app.api.creator_dashboard()

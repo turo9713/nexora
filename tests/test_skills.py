@@ -111,10 +111,11 @@ def test_loader_is_metadata_only_and_policy_is_scoped(tmp_path: Path) -> None:
 
 def test_skill_database_migration_is_reversible(tmp_path: Path) -> None:
     skills, database, _ = registry(tmp_path)
-    assert database.schema_version() == 9
+    assert database.schema_version() == 10
     assert len(database.list_skills()) == 5
     details = database.get_skill_details("research")
     assert details is not None and details["permission_rows"]
+    database.rollback(10)
     database.rollback(9)
     database.rollback(8)
     database.rollback(7)

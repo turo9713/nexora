@@ -63,6 +63,7 @@ class DashboardAPI:
         admin_console: AdminConsole | None = None,
         marketplace: MarketplaceService | None = None,
         creators: CreatorService | None = None,
+        ecosystem: Any | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -83,6 +84,7 @@ class DashboardAPI:
         self.admin_console = admin_console
         self.marketplace = marketplace
         self.creators = creators
+        self.ecosystem = ecosystem
 
     def health(self) -> dict[str, Any]:
         status = self._safe_status()
@@ -101,10 +103,75 @@ class DashboardAPI:
             "billing": "OK" if self.billing is not None else "WARNING",
             "marketplace": "OK" if self.marketplace is not None and self.database.schema_version() >= 8 else "ERROR",
             "creators": "OK" if self.creators is not None and self.database.schema_version() >= 9 else "ERROR",
+            "agent_ecosystem": "OK" if self.ecosystem is not None and self.database.schema_version() >= 10 else "ERROR",
             "api": self._health_value(status.get("api")),
             "gateway": self._health_value(status.get("openclaw")),
             "tasks": self.database.task_overview(self.namespace),
         }
+
+    def agent_center(self, query: dict[str, str]) -> dict[str, Any]:
+        workspace_id = self._workspace(query)
+        return {"workspace_id": workspace_id, "agents": self.ecosystem.builder.list(self.namespace, workspace_id)}
+
+    def agent_teams(self, query: dict[str, str]) -> dict[str, Any]:
+        workspace_id = self._workspace(query)
+        return {"workspace_id": workspace_id, "items": self.ecosystem.teams.list(self.namespace, workspace_id)}
+
+    def agent_plans(self, query: dict[str, str]) -> dict[str, Any]:
+        workspace_id = self._workspace(query)
+        return {"workspace_id": workspace_id, "items": self.ecosystem.planning.list(self.namespace, workspace_id)}
+
+    def agent_memory(self, query: dict[str, str]) -> dict[str, Any]:
+        workspace_id = self._workspace(query)
+        scope = str(query.get("scope") or "PERSONAL").upper()
+        return {"workspace_id": workspace_id, "scope": scope, "items": self.ecosystem.memory.list(self.namespace, workspace_id, scope=scope, agent_id=query.get("agent_id"))}
+
+    def agent_evaluations(self, query: dict[str, str]) -> dict[str, Any]:
+        workspace_id = self._workspace(query)
+        return {"workspace_id": workspace_id, "items": self.ecosystem.evaluation.list(self.namespace, workspace_id, query.get("agent_id"))}
+
+    def sdk_overview(self) -> dict[str, Any]:
+        return {"language": "python", "mode": "in-process", "arbitrary_code": False, "policy_checked": True, "operations": ["create_agent", "connect_skill", "create_team", "create_plan", "start_workflow", "result"]}
+
+    def create_custom_agent(self, value: dict[str, Any], dashboard_session_id: str) -> dict[str, Any]:
+        workspace_id = str(value.get("workspace_id") or "")
+        manifest = value.get("manifest") if isinstance(value.get("manifest"), dict) else {}
+        validated = self.ecosystem.builder.validate(manifest)
+        approval_id = str(value.get("approval_id") or "")
+        if not approval_id:
+            approval = self._management_approval(dashboard_session_id, f"agent_builder:create:{workspace_id}:{validated['id']}:{validated['version']}", f"Create agent {validated['id']} {validated['version']}", "Agent manifest activation changes workspace capabilities.")
+            return {"status": "WAITING_APPROVAL", **approval}
+        result = self.ecosystem.builder.create(self.namespace, workspace_id, manifest, approval_id=approval_id)
+        record = self.approvals.repository.get(self.namespace, approval_id)
+        if record is not None:
+            self._complete_management_task(str(record["task_id"]), f"Custom agent {validated['id']} created")
+        return result
+
+    def create_agent_team(self, value: dict[str, Any], dashboard_session_id: str) -> dict[str, Any]:
+        workspace_id = str(value.get("workspace_id") or "")
+        approval_id = str(value.get("approval_id") or "")
+        if not approval_id:
+            approval = self._management_approval(dashboard_session_id, f"agent_team:create:{workspace_id}", "Create agent team", "Team activation changes workspace orchestration.")
+            return {"status": "WAITING_APPROVAL", **approval}
+        result = self.ecosystem.teams.create(self.namespace, workspace_id, str(value.get("name") or ""), str(value.get("leader_agent_id") or ""), value.get("workflow") if isinstance(value.get("workflow"), list) else [], approval_id=approval_id)
+        record = self.approvals.repository.get(self.namespace, approval_id)
+        if record is not None:
+            self._complete_management_task(str(record["task_id"]), f"Agent team {result['id']} created")
+        return result
+
+    def create_agent_plan(self, value: dict[str, Any]) -> dict[str, Any]:
+        return self.ecosystem.planning.create(self.namespace, str(value.get("workspace_id") or ""), str(value.get("goal") or ""))
+
+    def _workspace(self, query: dict[str, str]) -> str:
+        if self.ecosystem is None:
+            raise DashboardAPIError(503, "AGENT_ECOSYSTEM_UNAVAILABLE", "Agent ecosystem unavailable")
+        workspace_id = str(query.get("workspace_id") or "")
+        if not workspace_id:
+            values = self.teams.list_workspaces(self.namespace) if self.teams else []
+            if not values:
+                raise DashboardAPIError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable")
+            workspace_id = str(values[0]["id"])
+        return workspace_id
 
     def list_tasks(self, query: dict[str, str]) -> dict[str, Any]:
         status = query.get("status", "").upper() or None

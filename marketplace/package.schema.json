@@ -12,6 +12,7 @@
     "author": {"type": "string", "minLength": 2, "maxLength": 100},
     "description": {"type": "string", "minLength": 2, "maxLength": 1000},
     "category": {"type": "string", "maxLength": 64},
+    "package_kind": {"enum": ["SINGLE_AGENT", "AGENT_TEAM", "AI_DEPARTMENT"]},
     "permissions": {"type": "object"},
     "risk_level": {"enum": ["LOW", "MEDIUM", "HIGH"]},
     "requirements": {"type": "array", "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"}, "maxItems": 100},

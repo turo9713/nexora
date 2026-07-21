@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from nexora.agents.registry import AgentRegistry
+from nexora.agents import AgentEcosystem
 from nexora.dashboard.api import DashboardAPI, DashboardAPIError
 from nexora.dashboard.auth import AuthService, BruteForceProtector, Session, SessionManager
 from nexora.dashboard.permissions import DashboardPermissions
@@ -62,6 +63,7 @@ class DashboardConfig:
     tls_cert_file: Path | None = Path("/run/secrets/dashboard_tls_cert")
     tls_key_file: Path | None = Path("/run/secrets/dashboard_tls_key")
     webhook_master_file: Path = Path("/run/secrets/api_webhook_master")
+    agent_memory_key_file: Path = Path("/run/secrets/agent_memory_key")
     allowed_origins: tuple[str, ...] = ("https://127.0.0.1:18880", "https://localhost:18880")
     session_ttl_seconds: int = 1800
 
@@ -144,7 +146,8 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     admin_console = AdminConsole(billing, namespace, policy)
     marketplace = MarketplaceService(database, teams, policy, audit)
     creators = CreatorService(database, marketplace, teams, policy, audit, administrator=namespace)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators)
+    ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_read_secret(config.agent_memory_key_file, 32))
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -168,7 +171,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/2.5"
+    server_version = "NexoraDashboard/3.0"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -220,6 +223,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             marketplace_install_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})/install", path)
             creator_action_match = re.fullmatch(r"/api/creator/packages/([a-z0-9][a-z0-9-]{1,62})/([0-9]+\.[0-9]+\.[0-9]+)/(submit|validate|publish)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
+            if path == "/api/agent-center":
+                response = self.app.api.create_custom_agent(body, session.session_id); self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response); return
+            if path == "/api/agent-teams":
+                response = self.app.api.create_agent_team(body, session.session_id); self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response); return
+            if path == "/api/agent-planning":
+                self._json(201, self.app.api.create_agent_plan(body)); return
             if agent_match:
                 agent_id = agent_match.group(1)
                 if not AGENT_ID.fullmatch(agent_id):
@@ -320,6 +329,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         except DashboardAPIError as exc:
             self.app.api.audit_access(path, exc.code)
             self._json(exc.status, {"error": exc.code, "message": exc.message})
+        except (ValueError, PermissionError):
+            self.app.api.audit_access(path, "AGENT_ECOSYSTEM_DENIED")
+            self._json(400, {"error": "AGENT_ECOSYSTEM_DENIED"})
 
     def _handle_api_get(self, path: str, query: dict[str, str]) -> None:
         permission = self._permission_for(path, "GET")
@@ -367,6 +379,18 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.marketplace_my_items()
             elif path == "/api/creator":
                 response = self.app.api.creator_dashboard()
+            elif path == "/api/agent-center":
+                response = self.app.api.agent_center(query)
+            elif path == "/api/agent-teams":
+                response = self.app.api.agent_teams(query)
+            elif path == "/api/agent-memory":
+                response = self.app.api.agent_memory(query)
+            elif path == "/api/agent-planning":
+                response = self.app.api.agent_plans(query)
+            elif path == "/api/agent-evaluations":
+                response = self.app.api.agent_evaluations(query)
+            elif path == "/api/sdk":
+                response = self.app.api.sdk_overview()
             elif path == "/api/approvals":
                 response = self.app.api.list_approvals(query)
             elif path == "/api/audit":
@@ -402,6 +426,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         except DashboardAPIError as exc:
             self.app.api.audit_access(path, exc.code)
             self._json(exc.status, {"error": exc.code, "message": exc.message})
+        except (ValueError, PermissionError):
+            self.app.api.audit_access(path, "AGENT_ECOSYSTEM_DENIED")
+            self._json(404, {"error": "RESOURCE_NOT_FOUND"})
 
     def _login(self) -> None:
         if not self._valid_origin():
@@ -470,6 +497,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "marketplace:read"
             if path == "/api/creator":
                 return "creator:read"
+            if path in {"/api/agent-center", "/api/agent-teams", "/api/agent-memory", "/api/agent-planning", "/api/agent-evaluations", "/api/sdk"}:
+                return "agent_ecosystem:read"
             if path == "/api/approvals":
                 return "approvals:read"
             if path == "/api/audit":
@@ -503,6 +532,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "marketplace:manage"
             if path in {"/api/creator/profile", "/api/creator/packages"} or re.fullmatch(r"/api/creator/packages/[a-z0-9][a-z0-9-]{1,62}/[0-9]+\.[0-9]+\.[0-9]+/(submit|validate|publish)", path):
                 return "creator:manage"
+            if path in {"/api/agent-center", "/api/agent-teams", "/api/agent-planning"}:
+                return "agent_ecosystem:manage"
         return None
 
     def _json_body(self) -> dict[str, Any] | None:
@@ -540,7 +571,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})
