@@ -35,7 +35,7 @@ jobs:
           python -m pip_audit --requirement requirements-release.txt
           bash scripts/secret-scan.sh
           python scripts/check-release-permissions.py
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build role images without publishing
         run: |
           for role in runtime dashboard api; do
