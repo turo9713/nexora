@@ -286,8 +286,9 @@ class SQLiteRepository:
             values.extend((pattern, pattern))
         values.append(max(1, min(200, int(limit))))
         query = (
-            "SELECT id, title, status, progress, agent, created_at, updated_at, completed_at, "
-            "result_summary, error_code FROM tasks WHERE " + " AND ".join(clauses) +
+            "SELECT id, owner, title, status, progress, agent, created_at, updated_at, completed_at, "
+            "result_summary, error_code, organization_id, workspace_id, creator_id, assignee_id "
+            "FROM tasks WHERE " + " AND ".join(clauses) +
             " ORDER BY updated_at DESC LIMIT ?"
         )
         with self._connect() as connection:
@@ -297,8 +298,9 @@ class SQLiteRepository:
     def get_task_details(self, owner: str, task_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             task = connection.execute(
-                "SELECT id, title, status, progress, agent, created_at, updated_at, completed_at, "
-                "result_summary, error_code FROM tasks WHERE owner=? AND id=?",
+                "SELECT id, owner, title, status, progress, agent, created_at, updated_at, completed_at, "
+                "result_summary, error_code, organization_id, workspace_id, creator_id, assignee_id "
+                "FROM tasks WHERE owner=? AND id=?",
                 (owner, task_id),
             ).fetchone()
             if task is None:
@@ -315,6 +317,44 @@ class SQLiteRepository:
         value["events"] = [dict(row) for row in events]
         value["approvals"] = [dict(row) for row in approvals]
         return value
+
+    def get_task_scope(self, task_id: str) -> dict[str, Any] | None:
+        """Return only the internal fields required to authorize a task read."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT owner, workspace_id FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def list_task_events(self, owner: str, task_id: str) -> list[dict[str, Any]]:
+        """Return task events only after an owner-scoped task match.
+
+        The join intentionally keeps task ownership in the same SQL statement as
+        the event lookup.  This prevents a caller from using a known task ID to
+        enumerate another owner's timeline.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT e.id, e.event_type, e.payload, e.created_at "
+                "FROM task_events e JOIN tasks t ON t.id=e.task_id "
+                "WHERE t.owner=? AND t.id=? "
+                "ORDER BY e.created_at ASC, e.id ASC",
+                (owner, task_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_workspace_task_events(self, workspace_id: str, task_id: str) -> list[dict[str, Any]]:
+        """Return events only for a task in an already-authorized workspace."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT e.id, e.event_type, e.payload, e.created_at "
+                "FROM task_events e JOIN tasks t ON t.id=e.task_id "
+                "WHERE t.workspace_id=? AND t.id=? "
+                "ORDER BY e.created_at ASC, e.id ASC",
+                (workspace_id, task_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_agent_tasks(self, owner: str, agent: str, limit: int = 10) -> list[dict[str, Any]]:
         with self._connect() as connection:

@@ -28,6 +28,8 @@ def request(connection, method, path, *, body=None, cookie=None, csrf=None, orig
 
 def test_authenticated_http_api_csrf_headers_and_logout(dashboard_factory) -> None:
     app, config = dashboard_factory()
+    task = app.api.tasks.create("b" * 32, "HTTP Task Control Center", "http-read-session", "NX-HTTP-READ-001")
+    app.api.tasks.transition("b" * 32, task["task_id"], "COMPLETED", event="HTTP_READ_READY")
 
     class Handler(DashboardRequestHandler):
         pass
@@ -43,6 +45,10 @@ def test_authenticated_http_api_csrf_headers_and_logout(dashboard_factory) -> No
         response, data = request(connection, "GET", "/api/health")
         assert response.status == 401 and data["error"] == "UNAUTHORIZED"
         response, data = request(connection, "GET", "/api/agents")
+        assert response.status == 401 and data["error"] == "UNAUTHORIZED"
+        response, data = request(connection, "GET", "/api/tasks")
+        assert response.status == 401 and data["error"] == "UNAUTHORIZED"
+        response, data = request(connection, "GET", "/api/tasks/NX-HTTP-READ-001/events")
         assert response.status == 401 and data["error"] == "UNAUTHORIZED"
 
         response, _ = request(connection, "POST", "/api/login", body={"username": "admin", "password": "wrong-password-value"})
@@ -75,6 +81,18 @@ def test_authenticated_http_api_csrf_headers_and_logout(dashboard_factory) -> No
         agent_audit = json.dumps(app.api.database.list_audit(event="API_ACCESS"))
         assert "/api/agents" in agent_audit
         assert cookie not in agent_audit and "Authorization" not in agent_audit
+
+        response, data = request(connection, "GET", "/api/tasks", cookie=cookie)
+        assert response.status == 200 and data["items"][0]["task_id"] == "NX-HTTP-READ-001"
+        response, data = request(connection, "GET", "/api/tasks/NX-HTTP-READ-001", cookie=cookie)
+        assert response.status == 200 and data["task_id"] == "NX-HTTP-READ-001"
+        response, data = request(connection, "GET", "/api/tasks/NX-HTTP-READ-001/events", cookie=cookie)
+        assert response.status == 200 and data["items"][-1]["type"] == "TASK_COMPLETED"
+        response, missing = request(connection, "GET", "/api/tasks/NX-NOT-AVAILABLE", cookie=cookie)
+        assert response.status == 404 and missing["error"] == "TASK_NOT_FOUND"
+        task_audit = json.dumps(app.api.database.list_audit(event="API_ACCESS"))
+        assert "/api/tasks/NX-HTTP-READ-001/events" in task_audit
+        assert cookie not in task_audit and "Authorization" not in task_audit
 
         response, data = request(connection, "GET", "/api/platform/metrics", cookie=cookie)
         assert response.status == 200 and "tasks_today" in data

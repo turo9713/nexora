@@ -184,7 +184,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/3.2"
+    server_version = "NexoraDashboard/3.3"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -235,23 +235,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             marketplace_install_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})/install", path)
             creator_action_match = re.fullmatch(r"/api/creator/packages/([a-z0-9][a-z0-9-]{1,62})/([0-9]+\.[0-9]+\.[0-9]+)/(submit|validate|publish)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
-            task_message_match = re.fullmatch(r"/api/tasks/([A-Za-z0-9-]{3,100})/messages", path)
-            task_cancel_match = re.fullmatch(r"/api/tasks/([A-Za-z0-9-]{3,100})/cancel", path)
-            if path == "/api/tasks":
-                response = self.app.api.create_dashboard_task(body)
-                self.app.api.audit_access(path)
-                self._json(202, response)
-                return
-            if task_message_match:
-                response = self.app.api.continue_dashboard_task(task_message_match.group(1), body)
-                self.app.api.audit_access(path)
-                self._json(202, response)
-                return
-            if task_cancel_match:
-                response = self.app.api.cancel_dashboard_task(task_cancel_match.group(1))
-                self.app.api.audit_access(path)
-                self._json(200, response)
-                return
             if path == "/api/agent-center":
                 response = self.app.api.create_custom_agent(body, session.session_id); self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response); return
             if path == "/api/agent-teams":
@@ -431,12 +414,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/platform/integrations":
                 response = self.app.api.integrations()
             else:
+                task_events_match = re.fullmatch(r"/api/tasks/([^/]+)/events", path)
                 task_match = re.fullmatch(r"/api/tasks/([^/]+)", path)
                 agent_match = re.fullmatch(r"/api/agents/([^/]+)", path)
                 skill_match = re.fullmatch(r"/api/skills/([^/]+)", path)
                 template_match = re.fullmatch(r"/api/templates/([^/]+)", path)
                 marketplace_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})", path)
-                if task_match and TASK_ID.fullmatch(task_match.group(1)):
+                if task_events_match and TASK_ID.fullmatch(task_events_match.group(1)):
+                    response = self.app.api.task_events(task_events_match.group(1))
+                elif task_match and TASK_ID.fullmatch(task_match.group(1)):
                     response = self.app.api.task_details(task_match.group(1))
                 elif agent_match and AGENT_ID.fullmatch(agent_match.group(1)):
                     response = self.app.api.agent_details(agent_match.group(1))
@@ -541,8 +527,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if method == "POST":
             if path == "/api/logout":
                 return "health:read"
-            if path == "/api/tasks" or re.fullmatch(r"/api/tasks/[^/]+/(messages|cancel)", path):
-                return "tasks:write"
             if re.fullmatch(r"/api/skills/[^/]+/(enable|disable|reload)", path):
                 return "skills:request_change"
             if re.fullmatch(r"/api/templates/[^/]+/install", path):

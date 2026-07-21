@@ -13,6 +13,7 @@ from nexora.integrations.telegram_runtime.services.task_service import TaskServi
 from nexora.security.audit.redaction import redact_text, sanitize_metadata
 from nexora.security.policies import PolicyEngine
 from nexora.skills import SkillRegistry, SkillRegistryError
+from nexora.storage import TaskReadModel
 from nexora.api.auth import APIKeyService
 from nexora.collaboration import TeamAccessDenied, TeamService
 from nexora.billing import BillingAccessDenied, BillingFoundation
@@ -88,6 +89,7 @@ class DashboardAPI:
         self.creators = creators
         self.ecosystem = ecosystem
         self.task_runtime = task_runtime
+        self.task_read_model = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, Any]:
         status = self._safe_status()
@@ -186,14 +188,14 @@ class DashboardAPI:
         except ValueError:
             raise DashboardAPIError(400, "INVALID_FILTER", "Некорректный лимит") from None
         search = query.get("search", "").strip()[:100] or None
-        return {"items": [self._safe_task(item) for item in self.database.list_tasks(self.namespace, limit=limit, status=status, search=search)]}
+        rows = self.database.list_tasks(self.namespace, limit=limit, status=status, search=search)
+        return {"items": self.task_read_model.list(self.namespace, rows)}
 
     def task_details(self, task_id: str) -> dict[str, Any]:
-        task = self.database.get_task_details(self.namespace, task_id)
+        task = self.task_read_model.get(self.namespace, task_id)
         if task is None:
             raise DashboardAPIError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
-        task = self._safe_task(task)
-        task["events"] = [self._safe_event(item) for item in task.get("events", [])]
+        raw = self.database.get_task_details(self.namespace, task_id) or {}
         task["approvals"] = [
             {
                 "id": item.get("id"),
@@ -202,12 +204,16 @@ class DashboardAPI:
                 "expires_at": item.get("expires_at"),
                 "used_at": item.get("used_at"),
             }
-            for item in task.get("approvals", [])
+            for item in raw.get("approvals", [])
         ]
-        task["conversation"] = self.task_runtime.conversation(task_id) if self.task_runtime is not None else []
         task["downloads"] = ([{"id": "result", "name": f"{task_id}-result.txt", "type": "text/plain"}]
                              if task.get("result_summary") else [])
         return task
+
+    def task_events(self, task_id: str) -> dict[str, Any]:
+        if self.task_read_model.get(self.namespace, task_id) is None:
+            raise DashboardAPIError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
+        return {"items": self.task_read_model.events(self.namespace, task_id)}
 
     def create_dashboard_task(self, value: dict[str, Any]) -> dict[str, Any]:
         runtime = self._task_runtime()
@@ -237,7 +243,7 @@ class DashboardAPI:
         return self._safe_task(stored or {"id": task["task_id"], **task})
 
     def task_result_file(self, task_id: str) -> tuple[str, bytes]:
-        task = self.database.get_task_details(self.namespace, task_id)
+        task = self.task_read_model.get(self.namespace, task_id)
         if task is None:
             raise DashboardAPIError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
         result = redact_text(task.get("result_summary"), 100_000).strip()

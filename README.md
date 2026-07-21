@@ -3,9 +3,9 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 3.2 adds a read-only Agent Control Center on top of the security-reviewed
-AI Agent Ecosystem: safe registry metadata, owner-scoped activity statistics,
-and authenticated list/detail API views. The repository contains the open-source
+Nexora 3.3 adds a read-only Task Control Center on top of the security-reviewed
+AI Agent Ecosystem: owner-scoped task status, existing runtime progress, safe
+lifecycle timelines, and authenticated list/detail/event API views. The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -13,6 +13,7 @@ deliberately outside the public boundary.
 ## Features
 
 - Task lifecycle, workflow routing, progress, cancellation, and idempotency.
+- Read-only Task Control Center with safe lifecycle timelines and no UI mutations.
 - Eight deny-by-default agent manifests and a policy gate before execution.
 - Read-only Agent Control Center with task counts and last activity; no UI mutation controls.
 - Declarative, schema-validated skills; no arbitrary plugin code loading.
@@ -91,10 +92,11 @@ the fixed non-root container UID. Every long-running container remains UID
 
 ## Quick Start
 
-After signing in, open **Tasks** to create a task directly from the Dashboard.
-The task card shows live progress and supports bounded follow-up messages,
-approval handoff, cancellation, and a sanitized `.txt` result download.
-Telegram remains available as an independent dialogue surface.
+After signing in, open **Tasks** to inspect your task list, current runtime
+progress, safe details, and lifecycle timeline. Task Control Center is strictly
+read-only: start, continuation, approval, and cancellation stay on the existing
+authorized runtime surfaces. Telegram remains available as an independent
+dialogue surface.
 
 Open the Dashboard URL from the installer and sign in with the one-time password
 shown during installation. Run the offline, non-publishing demo:

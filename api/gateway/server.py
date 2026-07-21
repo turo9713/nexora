@@ -154,7 +154,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/3.2"
+    server_version = "NexoraAPI/3.3"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -171,11 +171,14 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             self._json(200, self.app.gateway.health(), context)
             return
         route = ROUTES.get((method, path))
+        task_events_match = re.fullmatch(r"/api/v1/tasks/([^/]+)/events", path) if method == "GET" else None
         task_match = re.fullmatch(r"/api/v1/tasks/([^/]+)", path) if method == "GET" else None
         agent_match = re.fullmatch(r"/api/v1/agents/([^/]+)", path) if method == "GET" else None
         template_match = re.fullmatch(r"/api/v1/templates/([^/]+)", path)
         marketplace_match = re.fullmatch(r"/api/v1/marketplace/([a-z0-9][a-z0-9-]{1,62})(?:/(install))?", path)
         creator_match = re.fullmatch(r"/api/v1/creators/(CRT-[A-F0-9]{12})", path)
+        if route is None and task_events_match and TASK_ID.fullmatch(task_events_match.group(1)):
+            route = ("tasks:read", 60)
         if route is None and task_match and TASK_ID.fullmatch(task_match.group(1)):
             route = ("tasks:read", 60)
         if route is None and agent_match and AGENT_ID.fullmatch(agent_match.group(1)):
@@ -188,25 +191,30 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             route = ("creators:read", 60)
         if route is None:
             if path.startswith("/api/"):
-                self.app.audit.record("API_DENIED", severity="SECURITY", source="public_api", action_result="NOT_FOUND", request_id=context.request_id, method=method, endpoint=path)
+                self.app.audit.record("API_DENIED", severity="SECURITY", source="public_api", action_result="NOT_FOUND", request_id=context.request_id, correlation_id=context.correlation_id, method=method, endpoint=path)
             self._json(404, {"error": "NOT_FOUND"}, context)
             return
         scope, limit = route
-        self.app.audit.record("API_REQUEST", source="public_api", action_result="RECEIVED", request_id=context.request_id, method=method, endpoint=path)
+        rate_limit_path = path
+        if task_events_match:
+            rate_limit_path = "/api/v1/tasks/{id}/events"
+        elif task_match:
+            rate_limit_path = "/api/v1/tasks/{id}"
+        self.app.audit.record("API_REQUEST", source="public_api", action_result="RECEIVED", request_id=context.request_id, correlation_id=context.correlation_id, method=method, endpoint=path)
         bearer = self._bearer()
         principal = self.app.keys.authenticate(bearer) if bearer else None
         if principal is None:
-            self.app.audit.record("API_DENIED", severity="SECURITY", source="public_api", action_result="DENIED", request_id=context.request_id, endpoint=path, reason="authentication_or_scope")
+            self.app.audit.record("API_DENIED", severity="SECURITY", source="public_api", action_result="DENIED", request_id=context.request_id, correlation_id=context.correlation_id, endpoint=path, reason="authentication_or_scope")
             self.app.metrics.api_request(None, path, False)
             self._json(401, {"error": "UNAUTHORIZED"}, context)
             return
         if not principal.allows(scope):
-            self.app.audit.record("API_DENIED", severity="SECURITY", source="public_api", action_result="SCOPE_DENIED", request_id=context.request_id, endpoint=path, key_id=principal.key_id)
+            self.app.audit.record("API_DENIED", severity="SECURITY", source="public_api", action_result="SCOPE_DENIED", request_id=context.request_id, correlation_id=context.correlation_id, endpoint=path, key_id=principal.key_id)
             self.app.metrics.api_request(principal.owner, path, False)
             self._json(403, {"error": "SCOPE_DENIED"}, context)
             return
-        if not self.app.rate_limiter.allow(principal.key_id, principal.owner, path, limit=limit):
-            self.app.audit.record("API_RATE_LIMITED", source="public_api", action_result="RATE_LIMITED", request_id=context.request_id, endpoint=path, key_id=principal.key_id)
+        if not self.app.rate_limiter.allow(principal.key_id, principal.owner, rate_limit_path, limit=limit):
+            self.app.audit.record("API_RATE_LIMITED", source="public_api", action_result="RATE_LIMITED", request_id=context.request_id, correlation_id=context.correlation_id, endpoint=path, key_id=principal.key_id)
             self.app.metrics.api_request(principal.owner, path, False)
             self._json(429, {"error": "RATE_LIMIT_EXCEEDED"}, context)
             return
@@ -218,8 +226,11 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             elif method == "GET" and path == "/api/v1/tasks":
                 response = self.app.gateway.list_tasks(principal, query)
                 status = 200
+            elif task_events_match:
+                response = self.app.gateway.get_task_events(principal, task_events_match.group(1), query)
+                status = 200
             elif task_match:
-                response = self.app.gateway.get_task(principal, task_match.group(1))
+                response = self.app.gateway.get_task(principal, task_match.group(1), query)
                 status = 200
             elif method == "GET" and path == "/api/v1/agents":
                 response = self.app.gateway.list_agents(principal, query)
@@ -311,19 +322,19 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
                 status = 200
             else:
                 raise APIGatewayError(404, "NOT_FOUND", "Ресурс не найден")
-            self.app.audit.record("API_SUCCESS", source="public_api", action_result="SUCCESS", request_id=context.request_id, endpoint=path, key_id=principal.key_id)
+            self.app.audit.record("API_SUCCESS", source="public_api", action_result="SUCCESS", request_id=context.request_id, correlation_id=context.correlation_id, endpoint=path, key_id=principal.key_id)
             self.app.metrics.api_request(principal.owner, path, True)
             self._json(status, response, context)
         except APIGatewayError as exc:
-            self.app.audit.record("API_DENIED" if exc.status < 500 else "API_ERROR", source="public_api", action_result=exc.code, request_id=context.request_id, endpoint=path, key_id=principal.key_id)
+            self.app.audit.record("API_DENIED" if exc.status < 500 else "API_ERROR", source="public_api", action_result=exc.code, request_id=context.request_id, correlation_id=context.correlation_id, endpoint=path, key_id=principal.key_id)
             self.app.metrics.api_request(principal.owner, path, False)
             self._json(exc.status, {"error": exc.code, "message": exc.message}, context)
         except ValueError:
-            self.app.audit.record("API_DENIED", source="public_api", action_result="VALIDATION_ERROR", request_id=context.request_id, endpoint=path, key_id=principal.key_id)
+            self.app.audit.record("API_DENIED", source="public_api", action_result="VALIDATION_ERROR", request_id=context.request_id, correlation_id=context.correlation_id, endpoint=path, key_id=principal.key_id)
             self.app.metrics.api_request(principal.owner, path, False)
             self._json(400, {"error": "VALIDATION_ERROR"}, context)
         except Exception as exc:
-            self.app.audit.record("API_ERROR", severity="ERROR", source="public_api", action_result="INTERNAL_ERROR", request_id=context.request_id, endpoint=path, error_type=type(exc).__name__)
+            self.app.audit.record("API_ERROR", severity="ERROR", source="public_api", action_result="INTERNAL_ERROR", request_id=context.request_id, correlation_id=context.correlation_id, endpoint=path, error_type=type(exc).__name__)
             self._json(500, {"error": "INTERNAL_ERROR"}, context)
 
     def _body(self) -> dict[str, Any]:

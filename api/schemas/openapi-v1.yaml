@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 1.6.0
+  version: 1.7.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
@@ -29,8 +29,11 @@ paths:
   /tasks:
     get:
       operationId: listTasks
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
       responses:
-        "200": {description: Owner-scoped tasks}
+        "200": {description: Safe owner- or workspace-scoped read-only task inventory}
     post:
       operationId: createTask
       requestBody:
@@ -45,9 +48,19 @@ paths:
       operationId: getTask
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
       responses:
-        "200": {description: Safe task details}
+        "200": {description: Safe read-only task details from the existing runtime state}
         "404": {description: Task not found or unavailable}
+  /tasks/{id}/events:
+    get:
+      operationId: listTaskEvents
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+      responses:
+        "200": {description: Sanitized read-only lifecycle events for an accessible task}
+        "404": {description: Task or workspace not found or unavailable}
   /agents:
     get:
       operationId: listAgents

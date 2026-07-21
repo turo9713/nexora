@@ -12,6 +12,7 @@ from nexora.skills import SkillRegistryError
 from nexora.templates import TemplateApprovalRequired, TemplateRegistryError
 from nexora.marketplace import MarketplaceError
 from nexora.creators import CreatorError
+from nexora.storage import TaskReadModel
 
 
 class APIGatewayError(RuntimeError):
@@ -41,6 +42,7 @@ class APIGateway:
         self.webhooks = webhooks
         self.metrics = metrics
         self.ecosystem = ecosystem
+        self.task_reads = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, str]:
         return {"status": "ok" if self.database.check() and self.skills.health()["ok"] and self.templates.health()["ok"] else "degraded", "version": "v1"}
@@ -115,16 +117,60 @@ class APIGateway:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Некорректный лимит") from exc
         workspace_id = query.get("workspace_id")
         try:
-            items = self.teams.list_tasks(principal.owner, workspace_id, limit) if workspace_id else self.database.list_tasks(principal.owner, limit=limit)
+            if workspace_id:
+                items = self.teams.list_tasks(principal.owner, workspace_id, limit)
+                projected = self.task_reads.list_workspace(workspace_id, items)
+            else:
+                items = self.database.list_tasks(principal.owner, limit=limit)
+                visible: list[dict[str, Any]] = []
+                for item in items:
+                    item_workspace = str(item.get("workspace_id") or "")
+                    if item_workspace:
+                        try:
+                            self.teams.workspace_context(principal.owner, item_workspace, "tasks:read")
+                        except TeamAccessDenied:
+                            continue
+                    visible.append(item)
+                projected = self.task_reads.list(principal.owner, visible)
         except TeamAccessDenied as exc:
             raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
-        return {"items": [self._task(item) for item in items]}
+        return {"items": projected}
 
-    def get_task(self, principal: APIKeyPrincipal, task_id: str) -> dict[str, Any]:
-        value = self.database.get_task_details(principal.owner, task_id)
+    def get_task(self, principal: APIKeyPrincipal, task_id: str, query: dict[str, str]) -> dict[str, Any]:
+        value = self._task_access(principal, task_id, query)
+        return value
+
+    def get_task_events(self, principal: APIKeyPrincipal, task_id: str, query: dict[str, str]) -> dict[str, Any]:
+        value = self._task_access(principal, task_id, query)
+        return {"items": value.get("events", [])}
+
+    def _task_access(self, principal: APIKeyPrincipal, task_id: str, query: dict[str, str]) -> dict[str, Any]:
+        scope = self.database.get_task_scope(task_id)
+        if scope is None:
+            raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
+        requested_workspace = str(query.get("workspace_id") or "")
+        actual_workspace = str(scope.get("workspace_id") or "")
+        if requested_workspace:
+            try:
+                self.teams.workspace_context(principal.owner, requested_workspace, "tasks:read")
+            except TeamAccessDenied as exc:
+                raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+            if requested_workspace != actual_workspace:
+                raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
+        if actual_workspace:
+            if not requested_workspace:
+                try:
+                    self.teams.workspace_context(principal.owner, actual_workspace, "tasks:read")
+                except TeamAccessDenied as exc:
+                    raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна") from exc
+            value = self.task_reads.get_workspace(actual_workspace, task_id)
+        else:
+            if str(scope.get("owner") or "") != principal.owner:
+                raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
+            value = self.task_reads.get(principal.owner, task_id)
         if value is None:
             raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
-        return self._task(value)
+        return value
 
     def list_organizations(self, principal: APIKeyPrincipal) -> dict[str, Any]:
         return {"items": self.teams.list_organizations(principal.owner)}

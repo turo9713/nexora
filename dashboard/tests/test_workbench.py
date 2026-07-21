@@ -72,7 +72,8 @@ def test_dashboard_create_continue_idempotency_and_safe_download(dashboard_facto
     completed = wait_for(app, first["id"])
     assert completed["turn_number"] == 2
     details = app.api.task_details(first["id"])
-    assert len(details["conversation"]) == 4
+    assert len(runtime.conversation(first["id"])) == 4
+    assert "conversation" not in details
     assert "fixture-super-secret" not in str(details)
     assert details["downloads"][0]["id"] == "result"
     filename, payload = app.api.task_result_file(first["id"])
@@ -116,9 +117,11 @@ def test_dashboard_runtime_rejects_forbidden_and_cross_task_access(dashboard_fac
     runtime.execution.shutdown()
 
 
-def test_dashboard_workbench_http_create_status_and_download(dashboard_factory) -> None:
+def test_dashboard_task_control_center_http_is_read_only(dashboard_factory) -> None:
     app, config = dashboard_factory()
     runtime = attach_runtime(app, config)
+    created = app.api.create_dashboard_task({"message": "HTTP read-only task", "idempotency_key": "http-0001"})
+    wait_for(app, created["id"])
 
     class Handler(DashboardRequestHandler):
         pass
@@ -150,11 +153,23 @@ def test_dashboard_workbench_http_create_status_and_download(dashboard_factory) 
         response, login = call("POST", "/api/login", {"username": "admin", "password": PASSWORD})
         assert response.status == 200
         cookie = response.getheader("Set-Cookie").split(";", 1)[0].split("=", 1)[1]
-        response, created = call("POST", "/api/tasks", {"message": "HTTP web task", "idempotency_key": "http-0001"}, cookie, login["csrf_token"])
-        assert response.status == 202 and created["id"].startswith("NX-")
-        wait_for(app, created["id"])
+        response, listed = call("GET", "/api/tasks", cookie=cookie)
+        assert response.status == 200 and listed["items"][0]["task_id"] == created["id"]
         response, details = call("GET", f"/api/tasks/{created['id']}", cookie=cookie)
         assert response.status == 200 and details["status"] == "COMPLETED"
+        response, timeline = call("GET", f"/api/tasks/{created['id']}/events", cookie=cookie)
+        assert response.status == 200 and any(item["type"] == "TASK_COMPLETED" for item in timeline["items"])
+
+        before = app.api.database.get_task_details(NAMESPACE, created["id"])
+        for path, body in (
+            ("/api/tasks", {"message": "must not run", "idempotency_key": "http-denied"}),
+            (f"/api/tasks/{created['id']}/messages", {"message": "must not continue", "idempotency_key": "http-denied-message"}),
+            (f"/api/tasks/{created['id']}/cancel", {}),
+        ):
+            response, denied = call("POST", path, body, cookie, login["csrf_token"])
+            assert response.status == 403 and denied["error"] == "FORBIDDEN"
+        after = app.api.database.get_task_details(NAMESPACE, created["id"])
+        assert after == before
 
         connection.request("GET", f"/api/tasks/{created['id']}/downloads/result", headers={"Origin": ORIGIN, "Cookie": f"{COOKIE_NAME}={cookie}"})
         response = connection.getresponse()

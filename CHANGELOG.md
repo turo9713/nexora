@@ -2,6 +2,25 @@
 
 All notable changes follow Semantic Versioning.
 
+## [3.3.0] - 2026-07-22
+
+### Added
+
+- Read-only Task Control Center with owner-scoped task list, safe task details,
+  existing lifecycle progress, and sanitized event timelines.
+- Authenticated task list, detail, and event API reads with existing scopes,
+  rate limits, request/correlation identifiers, audit, and tenant isolation.
+
+### Security
+
+- Dashboard task mutations were removed from the Task Control Center; the UI
+  cannot start, continue, cancel, or otherwise change a task.
+- Timeline payloads are allowlisted and exclude raw event metadata, prompts,
+  secrets, tracebacks, and Gateway access.
+- Workspace-bound tasks require current membership and `tasks:read` RBAC even
+  when the caller omits `workspace_id`; shared reads never open another owner's
+  JSON context.
+
 ## [3.2.0] - 2026-07-22
 
 ### Added
