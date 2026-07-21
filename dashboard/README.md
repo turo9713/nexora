@@ -9,8 +9,15 @@ The dashboard is an internal HTTPS application composed of:
 - `permissions/` — deny-by-default dashboard authorization.
 
 The browser never receives database paths, secrets, system prompts, raw logs,
-or OpenClaw credentials. Agent state changes create an approval through the
-existing v1.4/v1.5 ApprovalService before an override is applied.
+or OpenClaw credentials.
+
+## Agent Control Center (v3.2)
+
+The Agents page is strictly read-only. It displays safe manifest metadata,
+resolved status, owner-scoped completed-task counts, last activity, permissions,
+allowed tools, restrictions, and recent tasks. Agent permission changes,
+enable/disable actions, shell execution, secrets, and Gateway access are not
+available from this Dashboard surface.
 
 ## Dashboard workbench (v3.1)
 

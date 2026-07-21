@@ -96,6 +96,60 @@ def test_rate_limit_per_key_endpoint_owner_and_recovery() -> None:
     assert limiter.allow("KEY-A", OWNER, "/api/v1/tasks", limit=2)
 
 
+def test_agent_control_center_api_auth_scope_isolation_and_audit(tmp_path: Path) -> None:
+    server = create_server(config(tmp_path), use_tls=False)
+    app = server.RequestHandlerClass.app
+    organization = app.gateway.teams.create_organization(OWNER, "Agent API Organization")
+    workspace = app.gateway.teams.create_workspace(OWNER, organization["id"], "Agent API Workspace")
+    app.gateway.database.set_workspace_component(workspace["id"], "agent", "developer", True)
+    app.gateway.database.upsert_task({
+        "task_id": "NX-AGENT-API-001", "owner_namespace": OWNER, "title": "Agent API task",
+        "status": "COMPLETED", "progress": 100, "assigned_agent": "developer",
+        "created_at": "2026-07-22T08:00:00+00:00", "updated_at": "2026-07-22T08:10:00+00:00",
+        "completed_at": "2026-07-22T08:10:00+00:00", "result_summary": "safe", "error_code": None,
+    })
+    app.gateway.teams.link_task(OWNER, workspace["id"], "NX-AGENT-API-001")
+    _, agent_key = issue(app, ["agents:read"], "agent-control")
+    _, wrong_scope_key = issue(app, ["tasks:read"], "agent-wrong-scope")
+    foreign_owner = "e" * 32
+    foreign_organization = app.gateway.teams.create_organization(foreign_owner, "Foreign Agent Organization")
+    foreign_workspace = app.gateway.teams.create_workspace(foreign_owner, foreign_organization["id"], "Foreign Agent Workspace")
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    try:
+        response, data = request(connection, "GET", "/api/v1/agents")
+        assert response.status == 401 and data["error"] == "UNAUTHORIZED"
+        response, data = request(connection, "GET", "/api/v1/agents", key=wrong_scope_key)
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
+
+        response, data = request(connection, "GET", f"/api/v1/agents?workspace_id={workspace['id']}", key=agent_key)
+        assert response.status == 200 and [item["id"] for item in data["items"]] == ["developer"]
+        agent = data["items"][0]
+        assert agent["completed_tasks"] == 1 and agent["last_activity"] == "2026-07-22T08:10:00+00:00"
+        assert {"name", "description", "status", "role", "risk_level", "permissions", "allowed_tools", "restrictions"} <= set(agent)
+
+        response, details = request(connection, "GET", f"/api/v1/agents/developer?workspace_id={workspace['id']}", key=agent_key)
+        assert response.status == 200 and details["id"] == "developer"
+        response, data = request(connection, "GET", f"/api/v1/agents/content?workspace_id={workspace['id']}", key=agent_key)
+        assert response.status == 404 and data["error"] == "AGENT_NOT_FOUND"
+        response, data = request(connection, "GET", f"/api/v1/agents/developer?workspace_id={foreign_workspace['id']}", key=agent_key)
+        assert response.status == 404 and data["error"] == "WORKSPACE_NOT_FOUND"
+        response, data = request(connection, "POST", "/api/v1/agents/developer", key=agent_key, body={"enabled": False})
+        assert response.status == 404 and data["error"] == "NOT_FOUND"
+        assert app.gateway.database.get_agent_override("developer") is None
+
+        audit = (config(tmp_path).state_root / "audit" / "events.jsonl").read_text(encoding="utf-8")
+        assert "API_REQUEST" in audit and "API_SUCCESS" in audit and "API_DENIED" in audit
+        assert agent_key not in audit and wrong_scope_key not in audit and "Authorization" not in audit
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_marketplace_http_api_scopes_publish_catalog_and_install(tmp_path: Path) -> None:
     server = create_server(config(tmp_path), use_tls=False)
     app = server.RequestHandlerClass.app
@@ -267,4 +321,5 @@ def test_public_api_has_no_gateway_transport_or_secret_config(tmp_path: Path) ->
     assert "openclaw_provider" not in source and "openclaw_transport" not in source
     specification = yaml.safe_load((PROJECT / "api" / "schemas" / "openapi-v1.yaml").read_text(encoding="utf-8"))
     assert specification["openapi"] == "3.1.0" and "/tasks" in specification["paths"] and "/templates" in specification["paths"]
+    assert "/agents" in specification["paths"] and "/agents/{id}" in specification["paths"]
     assert {"/organizations", "/workspaces", "/members", "/invite", "/knowledge", "/plans", "/subscription", "/usage", "/limits"}.issubset(specification["paths"])

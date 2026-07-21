@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from nexora.agents.registry import AgentRegistry
+from nexora.agents.registry import AgentRegistry, safe_agent_view
 from nexora.database import SQLiteRepository
 from nexora.integrations.telegram_runtime.services.approval_service import ApprovalService
 from nexora.integrations.telegram_runtime.services.audit_service import AuditService
@@ -953,21 +953,13 @@ class DashboardAPI:
         self.tasks.transition(self.namespace, task_id, "COMPLETED", event="MANAGEMENT_CONFIGURATION_CHANGED")
 
     def _agent_card(self, agent_id: str) -> dict[str, Any]:
-        manifest = self.registry.require(agent_id)
+        manifest = self.registry.get(agent_id)
+        if manifest is None:
+            raise DashboardAPIError(404, "AGENT_NOT_FOUND", "Агент не найден")
         override = self.database.get_agent_override(agent_id)
         enabled = manifest.enabled if override is None else override
-        recent = self.database.list_agent_tasks(self.namespace, agent_id, 20)
-        running = any(item.get("status") in {"NEW", "QUEUED", "PLANNING", "IN_PROGRESS"} for item in recent)
-        return {
-            "id": manifest.id,
-            "name": manifest.name,
-            "status": "ONLINE" if enabled and running else ("IDLE" if enabled else "DISABLED"),
-            "enabled": enabled,
-            "tools": list(manifest.tools_allowed),
-            "permissions": list(manifest.permissions),
-            "restrictions": list(manifest.restrictions),
-            "risk": manifest.risk_level,
-        }
+        summary = self.database.agent_task_summary(self.namespace, agent_id)
+        return safe_agent_view(manifest, enabled=enabled, task_summary=summary)
 
     def _safe_status(self) -> dict[str, str]:
         allowed = {"openclaw", "telegram", "api"}

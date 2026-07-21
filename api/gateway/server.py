@@ -37,6 +37,7 @@ from nexora.creators import CreatorService
 
 MAX_BODY = 32 * 1024
 TASK_ID = re.compile(r"^[A-Za-z0-9-]{3,100}$")
+AGENT_ID = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 ROUTES = {
     ("POST", "/api/v1/tasks"): ("tasks:create", 10),
     ("GET", "/api/v1/tasks"): ("tasks:read", 60),
@@ -153,7 +154,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/3.0"
+    server_version = "NexoraAPI/3.2"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -171,11 +172,14 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             return
         route = ROUTES.get((method, path))
         task_match = re.fullmatch(r"/api/v1/tasks/([^/]+)", path) if method == "GET" else None
+        agent_match = re.fullmatch(r"/api/v1/agents/([^/]+)", path) if method == "GET" else None
         template_match = re.fullmatch(r"/api/v1/templates/([^/]+)", path)
         marketplace_match = re.fullmatch(r"/api/v1/marketplace/([a-z0-9][a-z0-9-]{1,62})(?:/(install))?", path)
         creator_match = re.fullmatch(r"/api/v1/creators/(CRT-[A-F0-9]{12})", path)
         if route is None and task_match and TASK_ID.fullmatch(task_match.group(1)):
             route = ("tasks:read", 60)
+        if route is None and agent_match and AGENT_ID.fullmatch(agent_match.group(1)):
+            route = ("agents:read", 60)
         if route is None and template_match and TASK_ID.fullmatch(template_match.group(1)):
             route = ("templates:install" if method == "POST" else "templates:read", 10 if method == "POST" else 60)
         if route is None and marketplace_match:
@@ -219,6 +223,9 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
                 status = 200
             elif method == "GET" and path == "/api/v1/agents":
                 response = self.app.gateway.list_agents(principal, query)
+                status = 200
+            elif agent_match:
+                response = self.app.gateway.get_agent(principal, agent_match.group(1), query)
                 status = 200
             elif method == "GET" and path == "/api/v1/skills":
                 response = self.app.gateway.list_skills(principal, query)

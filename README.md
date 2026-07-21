@@ -3,9 +3,9 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 3.0 adds an AI Agent Ecosystem on top of the security-reviewed Creator
-Marketplace: Agent Builder, Agent Teams, safe planning, Memory 2.0, evaluation,
-and a declarative SDK foundation. The repository contains the open-source
+Nexora 3.2 adds a read-only Agent Control Center on top of the security-reviewed
+AI Agent Ecosystem: safe registry metadata, owner-scoped activity statistics,
+and authenticated list/detail API views. The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -14,6 +14,7 @@ deliberately outside the public boundary.
 
 - Task lifecycle, workflow routing, progress, cancellation, and idempotency.
 - Eight deny-by-default agent manifests and a policy gate before execution.
+- Read-only Agent Control Center with task counts and last activity; no UI mutation controls.
 - Declarative, schema-validated skills; no arbitrary plugin code loading.
 - One-time, expiring approvals for risky operations.
 - Sanitized event and tamper-evident audit records.

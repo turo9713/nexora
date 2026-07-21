@@ -42,6 +42,8 @@ def test_authenticated_http_api_csrf_headers_and_logout(dashboard_factory) -> No
     try:
         response, data = request(connection, "GET", "/api/health")
         assert response.status == 401 and data["error"] == "UNAUTHORIZED"
+        response, data = request(connection, "GET", "/api/agents")
+        assert response.status == 401 and data["error"] == "UNAUTHORIZED"
 
         response, _ = request(connection, "POST", "/api/login", body={"username": "admin", "password": "wrong-password-value"})
         assert response.status == 401
@@ -61,6 +63,18 @@ def test_authenticated_http_api_csrf_headers_and_logout(dashboard_factory) -> No
 
         response, data = request(connection, "GET", "/api/skills", cookie=cookie)
         assert response.status == 200 and len(data["items"]) == 5
+
+        response, data = request(connection, "GET", "/api/agents", cookie=cookie)
+        assert response.status == 200 and len(data["items"]) == 8
+        assert {"description", "risk_level", "allowed_tools", "completed_tasks", "last_activity"} <= set(data["items"][0])
+        response, data = request(connection, "GET", "/api/agents/developer", cookie=cookie)
+        assert response.status == 200 and data["id"] == "developer"
+        response, data = request(connection, "POST", "/api/agents/developer/actions", body={"action": "disable"}, cookie=cookie, csrf=csrf)
+        assert response.status == 403 and data["error"] == "FORBIDDEN"
+        assert app.api.database.get_agent_override("developer") is None
+        agent_audit = json.dumps(app.api.database.list_audit(event="API_ACCESS"))
+        assert "/api/agents" in agent_audit
+        assert cookie not in agent_audit and "Authorization" not in agent_audit
 
         response, data = request(connection, "GET", "/api/platform/metrics", cookie=cookie)
         assert response.status == 200 and "tasks_today" in data

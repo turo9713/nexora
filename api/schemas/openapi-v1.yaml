@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 1.5.0
+  version: 1.6.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
@@ -51,8 +51,19 @@ paths:
   /agents:
     get:
       operationId: listAgents
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
       responses:
-        "200": {description: Safe agent states}
+        "200": {description: Safe owner- or workspace-scoped Agent Control Center inventory}
+  /agents/{id}:
+    get:
+      operationId: getAgent
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^[a-z][a-z0-9-]{1,62}$"}}
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Safe read-only agent details and owner-scoped activity summary}
+        "404": {description: Agent or workspace not found or unavailable}
   /skills:
     get:
       operationId: listSkills

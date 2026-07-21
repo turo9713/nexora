@@ -11,7 +11,6 @@ class DashboardPermissions:
         "tasks:read",
         "tasks:write",
         "agents:read",
-        "agents:request_change",
         "approvals:read",
         "approvals:decide",
         "audit:read",

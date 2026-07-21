@@ -2,6 +2,18 @@
 
 All notable changes follow Semantic Versioning.
 
+## [3.2.0] - 2026-07-22
+
+### Added
+
+- Read-only Agent Control Center with registry metadata, safe task counts, and last activity.
+- Authenticated `GET /api/v1/agents/{id}` with existing scopes, rate limits, audit, and workspace isolation.
+
+### Security
+
+- Agent mutation controls were removed from the Dashboard surface; no shell, permission editing, secret access, or Gateway call is available.
+- Agent statistics remain owner- and workspace-scoped and expose neither prompts nor manifest source paths.
+
 ## [3.1.0] - 2026-07-21
 
 ### Added

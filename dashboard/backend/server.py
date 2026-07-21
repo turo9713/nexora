@@ -184,7 +184,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/3.1"
+    server_version = "NexoraDashboard/3.2"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -226,7 +226,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         try:
-            agent_match = re.fullmatch(r"/api/agents/([^/]+)/actions", path)
             skill_match = re.fullmatch(r"/api/skills/([^/]+)/(enable|disable|reload)", path)
             template_install_match = re.fullmatch(r"/api/templates/([^/]+)/install", path)
             key_action_match = re.fullmatch(r"/api/platform/api-keys/(KEY-[A-F0-9]{12})/(disable|delete)", path)
@@ -259,14 +258,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.create_agent_team(body, session.session_id); self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response); return
             if path == "/api/agent-planning":
                 self._json(201, self.app.api.create_agent_plan(body)); return
-            if agent_match:
-                agent_id = agent_match.group(1)
-                if not AGENT_ID.fullmatch(agent_id):
-                    raise DashboardAPIError(404, "AGENT_NOT_FOUND", "Агент не найден")
-                response = self.app.api.request_agent_action(agent_id, str(body.get("action") or ""), session.session_id)
-                self.app.api.audit_access(path)
-                self._json(202, response)
-                return
             if path == "/api/platform/api-keys":
                 response = self.app.api.request_api_key_create(body, session.session_id)
                 self.app.api.audit_access(path)
@@ -552,8 +543,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "health:read"
             if path == "/api/tasks" or re.fullmatch(r"/api/tasks/[^/]+/(messages|cancel)", path):
                 return "tasks:write"
-            if re.fullmatch(r"/api/agents/[^/]+/actions", path):
-                return "agents:request_change"
             if re.fullmatch(r"/api/skills/[^/]+/(enable|disable|reload)", path):
                 return "skills:request_change"
             if re.fullmatch(r"/api/templates/[^/]+/install", path):

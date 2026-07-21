@@ -325,6 +325,27 @@ class SQLiteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def agent_task_summary(self, owner: str, agent: str, workspace_id: str | None = None) -> dict[str, Any]:
+        clauses = ["owner=?", "lower(agent)=lower(?)"]
+        values: list[Any] = [owner, agent]
+        if workspace_id:
+            clauses.append("workspace_id=?")
+            values.append(workspace_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT "
+                "COUNT(CASE WHEN status='COMPLETED' THEN 1 END) AS completed_tasks, "
+                "COUNT(CASE WHEN status IN ('NEW','CLARIFYING','QUEUED','PLANNING','IN_PROGRESS','WAITING_APPROVAL') THEN 1 END) AS active_tasks, "
+                "MAX(updated_at) AS last_activity "
+                "FROM tasks WHERE " + " AND ".join(clauses),
+                tuple(values),
+            ).fetchone()
+        return {
+            "completed_tasks": int(row["completed_tasks"] or 0),
+            "active_tasks": int(row["active_tasks"] or 0),
+            "last_activity": row["last_activity"],
+        }
+
     def list_approvals(self, owner: str, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         query = (
             "SELECT id, task_id, action_type, status, expires_at, used_at FROM approvals WHERE owner=?"

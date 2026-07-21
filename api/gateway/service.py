@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from nexora.agents.registry import safe_agent_view
 from nexora.api.auth import APIKeyPrincipal
 from nexora.api.schemas import APIValidationError, validate_invite, validate_knowledge, validate_task_create, validate_webhook_create, validate_workspace_create
 from nexora.collaboration import TeamAccessDenied, TeamValidationError
@@ -214,12 +215,10 @@ class APIGateway:
         except BillingAccessDenied as exc:
             raise APIGatewayError(404, "ORGANIZATION_NOT_FOUND", "Organization not found or unavailable") from exc
 
-    def list_agents(self, principal: APIKeyPrincipal | None = None, query: dict[str, str] | None = None) -> dict[str, Any]:
+    def list_agents(self, principal: APIKeyPrincipal, query: dict[str, str] | None = None) -> dict[str, Any]:
         workspace_id = (query or {}).get("workspace_id")
         allowed_ids: set[str] | None = None
         if workspace_id:
-            if principal is None:
-                raise APIGatewayError(401, "UNAUTHORIZED", "Authentication required")
             try:
                 allowed_ids = set(self.teams.components(principal.owner, workspace_id, "agent"))
             except TeamAccessDenied as exc:
@@ -230,8 +229,26 @@ class APIGateway:
                 continue
             override = self.database.get_agent_override(manifest.id)
             enabled = manifest.enabled if override is None else override
-            items.append({"id": manifest.id, "status": "ACTIVE" if enabled else "DISABLED"})
+            summary = self.database.agent_task_summary(principal.owner, manifest.id, workspace_id)
+            items.append(safe_agent_view(manifest, enabled=enabled, task_summary=summary))
         return {"items": items}
+
+    def get_agent(self, principal: APIKeyPrincipal, agent_id: str, query: dict[str, str] | None = None) -> dict[str, Any]:
+        workspace_id = (query or {}).get("workspace_id")
+        if workspace_id:
+            try:
+                allowed_ids = set(self.teams.components(principal.owner, workspace_id, "agent"))
+            except TeamAccessDenied as exc:
+                raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+            if agent_id not in allowed_ids:
+                raise APIGatewayError(404, "AGENT_NOT_FOUND", "Agent not found or unavailable")
+        manifest = self.agents.get(agent_id)
+        if manifest is None:
+            raise APIGatewayError(404, "AGENT_NOT_FOUND", "Agent not found or unavailable")
+        override = self.database.get_agent_override(manifest.id)
+        enabled = manifest.enabled if override is None else override
+        summary = self.database.agent_task_summary(principal.owner, manifest.id, workspace_id)
+        return safe_agent_view(manifest, enabled=enabled, task_summary=summary)
 
     def list_skills(self, principal: APIKeyPrincipal | None = None, query: dict[str, str] | None = None) -> dict[str, Any]:
         workspace_id = (query or {}).get("workspace_id")
