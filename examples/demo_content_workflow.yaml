@@ -1,0 +1,15 @@
+id: public-content-demo
+version: 1.0.0
+description: Offline demo with no publication or production access.
+input: "Создай статью про искусственный интеллект"
+pipeline:
+  - research
+  - content
+  - qa
+  - approval
+  - result
+constraints:
+  network: false
+  publish: false
+  production: false
+  shell: false

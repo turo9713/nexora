@@ -1,0 +1,12 @@
+name: content_flow
+route: [orchestrator, research, content, qa, owner]
+steps:
+  - collect_request
+  - research_context
+  - draft_content
+  - qa_review
+  - deliver_to_owner
+security:
+  approval_required_for:
+    - publication
+    - external_sending

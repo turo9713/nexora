@@ -1,0 +1,66 @@
+openapi: 3.1.0
+info:
+  title: Nexora Public API
+  version: 1.0.0
+servers:
+  - url: https://127.0.0.1:18881/api/v1
+    description: Localhost-only production staging endpoint
+security:
+  - bearerAuth: []
+paths:
+  /tasks:
+    get:
+      operationId: listTasks
+      responses:
+        "200": {description: Owner-scoped tasks}
+    post:
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/TaskCreate"}
+      responses:
+        "202": {description: Task queued}
+  /tasks/{id}:
+    get:
+      operationId: getTask
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Safe task details}
+        "404": {description: Task not found or unavailable}
+  /agents:
+    get:
+      operationId: listAgents
+      responses:
+        "200": {description: Safe agent states}
+  /skills:
+    get:
+      operationId: listSkills
+      responses:
+        "200": {description: Safe skill states}
+  /webhooks:
+    get:
+      operationId: listWebhooks
+      responses:
+        "200": {description: Owner-scoped webhooks}
+    post:
+      operationId: requestWebhook
+      responses:
+        "202": {description: Waiting for approval}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: nx_live
+  schemas:
+    TaskCreate:
+      type: object
+      additionalProperties: false
+      required: [title, agent, skill]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        agent: {type: string, pattern: "^[a-z][a-z0-9-]{1,63}$"}
+        skill: {type: string, pattern: "^[a-z][a-z0-9-]{1,63}$"}

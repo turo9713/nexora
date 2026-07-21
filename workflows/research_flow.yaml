@@ -1,0 +1,11 @@
+name: research_flow
+route: [orchestrator, research, analytics, qa, owner]
+steps:
+  - collect_request
+  - research
+  - analyze
+  - qa_review
+  - deliver_to_owner
+security:
+  approval_required_for:
+    - external_sharing

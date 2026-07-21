@@ -1,0 +1,130 @@
+name: ${COMPOSE_PROJECT_NAME:-nexora-release}
+
+x-hardened: &hardened
+  build:
+    context: .
+    dockerfile: Dockerfile.release
+  image: nexora:${NEXORA_VERSION:-2.0.0}
+  user: "10001:10001"
+  read_only: true
+  init: true
+  restart: unless-stopped
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+  networks:
+    - nexora-internal
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  database:
+    <<: *hardened
+    command: ["python", "-m", "nexora.docker.services.database_service"]
+    volumes:
+      - nexora-state:/workspace/nexora/runtime/state
+    healthcheck:
+      test: ["CMD", "python", "-m", "nexora.docker.services.database_service", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  nexora-runtime:
+    <<: *hardened
+    command: ["python", "-m", "nexora.docker.services.runtime_service"]
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - nexora-state:/workspace/nexora/runtime/state
+      - nexora-status:/workspace/nexora/runtime/status
+    healthcheck:
+      test: ["CMD", "python", "-m", "nexora.docker.services.runtime_service", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  nexora-dashboard:
+    <<: *hardened
+    command: ["python", "-m", "nexora.dashboard"]
+    depends_on:
+      database:
+        condition: service_healthy
+      nexora-runtime:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${NEXORA_DASHBOARD_PORT:-18880}:18880"
+    volumes:
+      - nexora-state:/workspace/nexora/runtime/state
+      - nexora-status:/workspace/nexora/runtime/status:ro
+    secrets:
+      - dashboard_password_hash
+      - dashboard_session_key
+      - dashboard_owner_namespace
+      - dashboard_tls_cert
+      - dashboard_tls_key
+      - api_webhook_master
+    healthcheck:
+      test: ["CMD", "python", "-m", "nexora.dashboard", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  nexora-api:
+    <<: *hardened
+    command: ["python", "-m", "nexora.api"]
+    depends_on:
+      database:
+        condition: service_healthy
+      nexora-runtime:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${NEXORA_API_PORT:-18881}:18881"
+    volumes:
+      - nexora-state:/workspace/nexora/runtime/state
+    secrets:
+      - api_webhook_master
+      - source: dashboard_tls_cert
+        target: api_tls_cert
+      - source: dashboard_tls_key
+        target: api_tls_key
+    healthcheck:
+      test: ["CMD", "python", "-m", "nexora.api", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+networks:
+  nexora-internal:
+    name: ${COMPOSE_PROJECT_NAME:-nexora-release}-internal
+    driver: bridge
+
+volumes:
+  nexora-state:
+    name: ${COMPOSE_PROJECT_NAME:-nexora-release}-state
+  nexora-status:
+    name: ${COMPOSE_PROJECT_NAME:-nexora-release}-status
+
+secrets:
+  dashboard_password_hash:
+    file: .secrets/dashboard_password_hash
+  dashboard_session_key:
+    file: .secrets/dashboard_session_key
+  dashboard_owner_namespace:
+    file: .secrets/dashboard_owner_namespace
+  dashboard_tls_cert:
+    file: .secrets/dashboard_tls_cert
+  dashboard_tls_key:
+    file: .secrets/dashboard_tls_key
+  api_webhook_master:
+    file: .secrets/api_webhook_master

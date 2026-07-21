@@ -1,0 +1,28 @@
+id: content-writer
+name: Content Writer
+version: 1.0.0
+description: Создание статей, черновиков и безопасной структуры текста.
+author: Nexora
+category: content
+agent: content
+permissions:
+  filesystem:
+    scope: [drafts]
+    mode: read_write
+  network:
+    mode: none
+  shell:
+    enabled: false
+  production:
+    enabled: false
+risk:
+  level: low
+tools: [text_generation]
+security:
+  sandbox:
+    enabled: true
+approval:
+  required: false
+compatibility:
+  min_platform: 1.7.0
+status: ACTIVE

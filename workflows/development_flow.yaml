@@ -1,0 +1,13 @@
+name: development_flow
+route: [orchestrator, developer, qa, owner]
+steps:
+  - collect_request
+  - plan_implementation
+  - implement_in_workspace
+  - qa_review
+  - deliver_to_owner
+security:
+  approval_required_for:
+    - production_changes
+    - deletion
+    - external_deployment

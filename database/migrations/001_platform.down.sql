@@ -1,0 +1,13 @@
+PRAGMA foreign_keys = OFF;
+DROP INDEX IF EXISTS idx_audit_event_created;
+DROP INDEX IF EXISTS idx_approvals_owner_status;
+DROP INDEX IF EXISTS idx_task_events_task_created;
+DROP INDEX IF EXISTS idx_tasks_owner_updated;
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS approvals;
+DROP TABLE IF EXISTS task_events;
+DROP TABLE IF EXISTS tasks;
+DROP TABLE IF EXISTS users;
+DELETE FROM schema_migrations WHERE version = 1;
+DROP TABLE IF EXISTS schema_migrations;
+PRAGMA foreign_keys = ON;

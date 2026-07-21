@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["result_id", "task_id", "agent", "status", "summary", "details", "artifacts", "warnings", "next_action", "created_at"],
+  "properties": {
+    "result_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "agent": {"type": "string"},
+    "status": {"type": "string", "enum": ["SUCCESS", "WARNING", "FAILED", "NEEDS_APPROVAL"]},
+    "summary": {"type": "string"},
+    "details": {"type": ["string", "object", "array", "null"]},
+    "artifacts": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "next_action": {"type": ["string", "null"]},
+    "created_at": {"type": "string", "format": "date-time"}
+  }
+}

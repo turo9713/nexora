@@ -1,0 +1,16 @@
+version: 1
+default: deny
+workspace_root: /workspace/nexora
+risk:
+  LOW: allow
+  MEDIUM: approval_required
+  HIGH: approval_required
+  CRITICAL: deny
+forbidden_actions:
+  - secrets_access
+  - security_policy_changes
+  - sandbox_disable
+  - root
+  - financial_operations
+  - firewall_changes
+  - ssh_changes

@@ -1,0 +1,28 @@
+id: analytics
+name: Analytics
+version: 1.0.0
+description: Read-only анализ метрик и создание агрегированных отчётов.
+author: Nexora
+category: analytics
+agent: analytics
+permissions:
+  filesystem:
+    scope: [data]
+    mode: read_only
+  network:
+    mode: none
+  shell:
+    enabled: false
+  production:
+    enabled: false
+risk:
+  level: low
+tools: [metrics_analysis, reporting]
+security:
+  sandbox:
+    enabled: true
+approval:
+  required: false
+compatibility:
+  min_platform: 1.7.0
+status: DISABLED

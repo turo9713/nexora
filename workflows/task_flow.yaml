@@ -1,0 +1,34 @@
+name: task_flow
+routes:
+  development:
+    - orchestrator
+    - developer
+    - qa
+    - owner
+  content:
+    - orchestrator
+    - research
+    - content
+    - qa
+    - owner
+  analytics:
+    - orchestrator
+    - research
+    - analytics
+    - qa
+    - owner
+  server:
+    - orchestrator
+    - devops
+    - qa
+    - approval
+    - owner
+security_rules:
+  require_approval_for:
+    - publication
+    - sending_messages
+    - server_changes
+    - financial_actions
+    - trading_actions
+    - file_deletion
+    - configuration_changes

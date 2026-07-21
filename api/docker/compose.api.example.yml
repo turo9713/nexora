@@ -1,0 +1,30 @@
+services:
+  nexora-api:
+    image: <PINNED_OPENCLAW_IMAGE_DIGEST>
+    container_name: nexora-api
+    user: "999:987"
+    command: ["/workspace/nexora/runtime/.venv/bin/python", "-m", "nexora.api"]
+    working_dir: /workspace
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    read_only: true
+    init: true
+    restart: unless-stopped
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    ports: ["127.0.0.1:18881:18881"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777"]
+    volumes:
+      - ../workspaces/bootstrap:/workspace:ro
+      - ../workspaces/bootstrap/nexora/runtime/state:/workspace/nexora/runtime/state:rw
+      - ../secrets/api_webhook_master:/run/secrets/api_webhook_master:ro
+      - ../secrets/api_tls_cert:/run/secrets/api_tls_cert:ro
+      - ../secrets/api_tls_key:/run/secrets/api_tls_key:ro
+    healthcheck:
+      test: ["CMD", "/workspace/nexora/runtime/.venv/bin/python", "-m", "nexora.api", "--healthcheck"]
+    networks: ["nexora-api-internal"]
+
+networks:
+  nexora-api-internal:
+    name: nexora-api-internal

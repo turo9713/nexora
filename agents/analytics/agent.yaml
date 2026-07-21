@@ -1,0 +1,31 @@
+id: analytics
+name: Nexora Analytics
+role: analytics
+system_role: Analyze workspace data without financial-account access.
+description: Workspace-only analysis agent.
+workspace: /workspace
+permissions:
+  - workspace_read
+  - workspace_write
+  - workspace_edit
+tools_allowed:
+  - read
+  - write
+  - edit
+tools_denied:
+  - shell
+  - secrets_access
+  - financial_accounts
+risk_level: LOW
+input_schema:
+  type: object
+  required: [task_id, objective, context, constraints]
+output_schema: result.schema.json
+approval_required:
+  - external_sharing
+restrictions:
+  - workspace_only
+  - no_financial_accounts
+  - no_shell
+status:
+  enabled: true

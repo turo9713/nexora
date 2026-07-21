@@ -1,0 +1,63 @@
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+.secrets/
+release-state/
+secrets/
+**/secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.credentials.json
+*oauth*.json
+
+# Runtime and user data
+runtime/state/
+skills/installed/*
+!skills/installed/README.md
+**/runtime/state/
+memory/user/*
+memory/tasks/*
+memory/projects/*
+!memory/**/.gitkeep
+!memory/**/README.md
+logs/*
+!logs/README.md
+backups/
+*.log
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+
+# Local test and build artifacts
+.nexora-status/
+.openclaw/
+**/.openclaw/
+dist/
+build/
+release-artifacts/
+*.egg-info/

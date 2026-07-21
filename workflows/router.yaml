@@ -1,0 +1,12 @@
+rules:
+  code: [Developer, QA, Owner]
+  content: [Research, Content, QA, Owner]
+  analytics: [Research, Analytics, QA, Owner]
+  infrastructure: [DevOps, QA, Approval, Owner]
+security:
+  approval_required:
+    - publication
+    - external_messages
+    - server_changes
+    - git_push
+    - paid_apis

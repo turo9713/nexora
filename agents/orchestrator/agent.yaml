@@ -1,0 +1,42 @@
+id: orchestrator
+name: Nexora Orchestrator
+role: orchestrator
+system_role: Route tasks and coordinate registered agents without executing privileged operations.
+description: Central task router and coordinator.
+workspace: /workspace
+permissions:
+  - workspace_read
+  - workspace_write
+  - workspace_edit
+  - workspace_patch
+tools_allowed:
+  - read
+  - write
+  - edit
+  - apply_patch
+  - session_status
+tools_denied:
+  - shell
+  - process_control
+  - network
+  - secrets_access
+  - policy_changes
+risk_level: HIGH
+input_schema:
+  type: object
+  required: [user_request, context, priority, constraints]
+output_schema: task.schema.json
+approval_required:
+  - publication
+  - sending_messages
+  - server_changes
+  - financial_actions
+  - trading_actions
+  - file_deletion
+  - configuration_changes
+restrictions:
+  - no_root
+  - no_secrets
+  - no_policy_changes
+status:
+  enabled: true

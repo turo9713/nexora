@@ -1,0 +1,36 @@
+services:
+  nexora-dashboard:
+    image: ghcr.io/openclaw/openclaw@sha256:6a31d44b2944e7adcd2b582bf6fb463111264ebca97a0201795b799135bd102c
+    container_name: nexora-dashboard
+    user: "999:987"
+    command: ["/workspace/nexora/runtime/.venv/bin/python", "-m", "nexora.dashboard"]
+    working_dir: /workspace
+    read_only: true
+    init: true
+    restart: unless-stopped
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    ports: ["127.0.0.1:18880:18880"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777"]
+    volumes:
+      - ../workspaces/bootstrap:/workspace:ro
+      - ../workspaces/bootstrap/nexora/runtime/state:/workspace/nexora/runtime/state:rw
+      - ../secrets/dashboard_password_hash:/run/secrets/dashboard_password_hash:ro
+      - ../secrets/dashboard_session_key:/run/secrets/dashboard_session_key:ro
+      - ../secrets/dashboard_owner_namespace:/run/secrets/dashboard_owner_namespace:ro
+      - ../secrets/dashboard_tls_cert:/run/secrets/dashboard_tls_cert:ro
+      - ../secrets/dashboard_tls_key:/run/secrets/dashboard_tls_key:ro
+    healthcheck:
+      test: ["CMD", "/workspace/nexora/runtime/.venv/bin/python", "-m", "nexora.dashboard", "--healthcheck"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 15s
+    networks: ["nexora-dashboard-internal"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+networks:
+  nexora-dashboard-internal:
+    name: nexora-dashboard-internal

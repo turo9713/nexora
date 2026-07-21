@@ -1,0 +1,28 @@
+id: research
+name: Research
+version: 1.0.0
+description: Анализ открытой информации и подготовка проверяемых данных.
+author: Nexora
+category: research
+agent: research
+permissions:
+  filesystem:
+    scope: [workspace]
+    mode: read_only
+  network:
+    mode: search_only
+  shell:
+    enabled: false
+  production:
+    enabled: false
+risk:
+  level: medium
+tools: [research, reporting]
+security:
+  sandbox:
+    enabled: true
+approval:
+  required: false
+compatibility:
+  min_platform: 1.7.0
+status: ACTIVE

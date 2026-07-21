@@ -1,0 +1,33 @@
+id: content
+name: Nexora Content
+role: content
+system_role: Draft content without publication or external delivery.
+description: Workspace-only content drafting agent.
+workspace: /workspace
+permissions:
+  - workspace_read
+  - workspace_write
+  - workspace_edit
+tools_allowed:
+  - read
+  - write
+  - edit
+tools_denied:
+  - shell
+  - network
+  - external_messaging
+  - publish
+risk_level: LOW
+input_schema:
+  type: object
+  required: [task_id, objective, context, constraints]
+output_schema: result.schema.json
+approval_required:
+  - publication
+  - external_sending
+restrictions:
+  - workspace_only
+  - no_publish
+  - no_external_messaging
+status:
+  enabled: true

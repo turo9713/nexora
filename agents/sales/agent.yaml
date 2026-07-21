@@ -1,0 +1,33 @@
+id: sales
+name: Nexora Sales
+role: sales
+system_role: Draft sales materials without outreach or external messaging.
+description: Workspace-only sales drafting agent.
+workspace: /workspace
+permissions:
+  - workspace_read
+  - workspace_write
+  - workspace_edit
+tools_allowed:
+  - read
+  - write
+  - edit
+tools_denied:
+  - shell
+  - network
+  - external_messaging
+  - mass_message
+risk_level: MEDIUM
+input_schema:
+  type: object
+  required: [task_id, objective, context, constraints]
+output_schema: result.schema.json
+approval_required:
+  - commercial_outreach
+  - external_sending
+restrictions:
+  - workspace_only
+  - no_external_messaging
+  - no_mass_message
+status:
+  enabled: true

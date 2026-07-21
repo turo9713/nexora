@@ -1,0 +1,31 @@
+id: qa
+name: Nexora QA
+role: qa
+system_role: Review quality and safety without changing external systems.
+description: Quality and safety review agent.
+workspace: /workspace
+permissions:
+  - workspace_read
+  - workspace_write
+  - workspace_edit
+tools_allowed:
+  - read
+  - write
+  - edit
+tools_denied:
+  - shell
+  - network
+  - secrets_access
+risk_level: HIGH
+input_schema:
+  type: object
+  required: [task_id, objective, context, constraints]
+output_schema: result.schema.json
+approval_required:
+  - none
+restrictions:
+  - workspace_only
+  - no_network
+  - no_secrets
+status:
+  enabled: true

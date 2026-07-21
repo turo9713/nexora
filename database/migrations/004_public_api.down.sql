@@ -1,0 +1,11 @@
+PRAGMA foreign_keys = OFF;
+DROP INDEX IF EXISTS idx_metrics_type_created;
+DROP INDEX IF EXISTS idx_webhook_deliveries_hook;
+DROP INDEX IF EXISTS idx_webhooks_owner_status;
+DROP INDEX IF EXISTS idx_api_keys_owner_status;
+DROP TABLE IF EXISTS webhook_deliveries;
+DROP TABLE IF EXISTS metrics;
+DROP TABLE IF EXISTS webhooks;
+DROP TABLE IF EXISTS api_keys;
+DELETE FROM schema_migrations WHERE version = 4;
+PRAGMA foreign_keys = ON;

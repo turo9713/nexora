@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approval_id", "task_id", "requested_by", "requested_action", "description", "risk_level", "created_at", "expires_at", "status", "approved_by", "approved_at"],
+  "properties": {
+    "approval_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "requested_by": {"type": "string"},
+    "requested_action": {"type": "string"},
+    "description": {"type": "string"},
+    "risk_level": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "status": {"type": "string", "enum": ["PENDING", "APPROVED", "REJECTED", "EXPIRED"]},
+    "approved_by": {"type": ["string", "null"]},
+    "approved_at": {"type": ["string", "null"], "format": "date-time"}
+  }
+}

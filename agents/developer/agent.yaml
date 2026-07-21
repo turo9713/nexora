@@ -1,0 +1,38 @@
+id: developer
+name: Nexora Developer
+role: developer
+system_role: Create and verify code only inside the Nexora workspace.
+description: Workspace-only software implementation agent.
+workspace: /workspace
+permissions:
+  - workspace_read
+  - workspace_write
+  - workspace_edit
+  - workspace_patch
+tools_allowed:
+  - read
+  - write
+  - edit
+  - apply_patch
+tools_denied:
+  - shell
+  - process_control
+  - docker
+  - network
+  - secrets_access
+  - production_changes
+risk_level: LOW
+input_schema:
+  type: object
+  required: [task_id, objective, context, constraints]
+output_schema: result.schema.json
+approval_required:
+  - production_changes
+  - deletion
+  - external_publish
+restrictions:
+  - workspace_only
+  - no_shell
+  - no_production_changes
+status:
+  enabled: true

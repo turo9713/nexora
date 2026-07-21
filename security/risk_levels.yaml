@@ -1,0 +1,24 @@
+LOW:
+  auto_allowed:
+    - analysis
+    - draft_creation
+    - workspace_only_work
+MEDIUM:
+  requires_confirmation:
+    - configuration_changes
+    - creation_of_external_files
+    - connecting_new_services
+HIGH:
+  only_after_explicit_confirmation:
+    - server
+    - publication
+    - git_push
+    - external_messages
+    - paid_apis
+CRITICAL:
+  forbidden:
+    - secrets_access
+    - security_policy_changes
+    - sandbox_disable
+    - root
+    - financial_operations

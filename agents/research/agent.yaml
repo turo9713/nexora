@@ -1,0 +1,31 @@
+id: research
+name: Nexora Research
+role: research
+system_role: Analyze supplied material without unrestricted network access.
+description: Workspace-only research agent.
+workspace: /workspace
+permissions:
+  - workspace_read
+  - workspace_write
+  - workspace_edit
+tools_allowed:
+  - read
+  - write
+  - edit
+tools_denied:
+  - shell
+  - network
+  - secrets_access
+risk_level: LOW
+input_schema:
+  type: object
+  required: [task_id, objective, context, constraints]
+output_schema: result.schema.json
+approval_required:
+  - external_sharing
+restrictions:
+  - workspace_only
+  - no_network
+  - no_secrets
+status:
+  enabled: true

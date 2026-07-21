@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_id", "task_id", "from_agent", "to_agent", "objective", "context", "requirements", "constraints", "expected_output", "created_at"],
+  "properties": {
+    "message_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "from_agent": {"type": "string"},
+    "to_agent": {"type": "string"},
+    "objective": {"type": "string"},
+    "context": {"type": "object"},
+    "requirements": {"type": "array", "items": {"type": "string"}},
+    "constraints": {"type": "array", "items": {"type": "string"}},
+    "expected_output": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"}
+  }
+}

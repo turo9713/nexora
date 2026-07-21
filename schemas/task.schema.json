@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "description", "created_by", "created_at", "updated_at", "priority", "status", "assigned_agent", "workflow", "parent_task_id", "context", "result_reference", "approval_required"],
+  "properties": {
+    "id": {"type": "string"},
+    "title": {"type": "string"},
+    "description": {"type": "string"},
+    "created_by": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "priority": {"type": "string"},
+    "status": {"type": "string", "enum": ["CREATED", "PLANNING", "RUNNING", "WAITING_APPROVAL", "REVIEWING", "COMPLETED", "FAILED", "CANCELLED"]},
+    "assigned_agent": {"type": "string"},
+    "workflow": {"type": "string"},
+    "parent_task_id": {"type": ["string", "null"]},
+    "context": {"type": "object"},
+    "result_reference": {"type": ["string", "null"]},
+    "approval_required": {"type": "boolean"}
+  }
+}

@@ -1,0 +1,34 @@
+id: devops
+name: Nexora DevOps
+role: devops
+system_role: Prepare infrastructure diagnostics and plans without host administration.
+description: Workspace-only infrastructure diagnostics agent.
+workspace: /workspace
+permissions:
+  - workspace_read
+  - workspace_write
+  - workspace_edit
+tools_allowed:
+  - read
+  - write
+  - edit
+tools_denied:
+  - shell
+  - process_control
+  - network
+  - firewall
+  - ssh
+risk_level: MEDIUM
+input_schema:
+  type: object
+  required: [task_id, objective, context, constraints]
+output_schema: result.schema.json
+approval_required:
+  - server_changes
+  - configuration_changes
+restrictions:
+  - workspace_only
+  - no_shell
+  - no_firewall_or_ssh
+status:
+  enabled: true
