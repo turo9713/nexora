@@ -1,0 +1,16 @@
+id: code-review
+name: Code Review
+version: 1.0.0
+description: Read-only repository analysis with developer and QA review.
+agents: [developer, qa]
+skills: [github-agent]
+permissions:
+  level: LOW
+  filesystem: workspace-read-only
+  network: github-read-only
+  production: false
+approval_required: false
+created_by: Nexora
+status: ACTIVE
+compatibility:
+  min_platform: 2.1.0

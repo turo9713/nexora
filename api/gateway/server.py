@@ -22,9 +22,11 @@ from nexora.integrations.telegram_runtime.storage.approval_repository import App
 from nexora.integrations.telegram_runtime.storage.audit_repository import AuditRepository
 from nexora.integrations.telegram_runtime.storage.task_repository import TaskRepository
 from nexora.metrics import MetricsService
+from nexora.playground import PlaygroundService
 from nexora.runtime.events import EventBus, SQLiteEventSink
 from nexora.security.policies import PolicyEngine
 from nexora.skills import SkillRegistry
+from nexora.templates import TemplateRegistry
 from nexora.webhooks import WebhookService
 
 
@@ -35,6 +37,8 @@ ROUTES = {
     ("GET", "/api/v1/tasks"): ("tasks:read", 60),
     ("GET", "/api/v1/agents"): ("agents:read", 60),
     ("GET", "/api/v1/skills"): ("skills:read", 60),
+    ("GET", "/api/v1/templates"): ("templates:read", 60),
+    ("GET", "/api/v1/playground/examples"): ("playground:read", 60),
     ("POST", "/api/v1/webhooks"): ("webhooks:manage", 10),
     ("GET", "/api/v1/webhooks"): ("webhooks:manage", 30),
 }
@@ -81,14 +85,16 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
         database=database,
         audit=audit,
         agent_registry=agents,
-        platform_version="1.8.0",
+        platform_version="2.1.0",
     ).load()
     events = EventBus([SQLiteEventSink(database)])
     tasks = TaskService(TaskRepository(config.state_root / "tasks"), database=database, event_bus=events)
     approvals = ApprovalService(ApprovalRepository(config.state_root / "approvals"), database=database, event_bus=events)
     webhooks = WebhookService(database, _secret(config.webhook_master_file), audit=audit)
     metrics = MetricsService(database)
-    gateway = APIGateway(database, agents, skills, policy, tasks, approvals, webhooks, metrics)
+    templates = TemplateRegistry(config.project_root / "templates", database=database, agents=agents, skills=skills, policy=policy, audit=audit, metrics=metrics).load()
+    playground = PlaygroundService(audit)
+    gateway = APIGateway(database, agents, skills, templates, playground, policy, tasks, approvals, webhooks, metrics)
     return PublicAPIApplication(gateway, APIKeyService(database), APIRateLimiter(), audit, metrics)
 
 
@@ -112,7 +118,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/1.8"
+    server_version = "NexoraAPI/2.1"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -130,8 +136,11 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             return
         route = ROUTES.get((method, path))
         task_match = re.fullmatch(r"/api/v1/tasks/([^/]+)", path) if method == "GET" else None
+        template_match = re.fullmatch(r"/api/v1/templates/([^/]+)", path)
         if route is None and task_match and TASK_ID.fullmatch(task_match.group(1)):
             route = ("tasks:read", 60)
+        if route is None and template_match and TASK_ID.fullmatch(template_match.group(1)):
+            route = ("templates:install" if method == "POST" else "templates:read", 10 if method == "POST" else 60)
         if route is None:
             if path.startswith("/api/"):
                 self.app.audit.record("API_DENIED", severity="SECURITY", source="public_api", action_result="NOT_FOUND", request_id=context.request_id, method=method, endpoint=path)
@@ -172,6 +181,18 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
                 status = 200
             elif method == "GET" and path == "/api/v1/skills":
                 response = self.app.gateway.list_skills()
+                status = 200
+            elif method == "GET" and path == "/api/v1/templates":
+                response = self.app.gateway.list_templates()
+                status = 200
+            elif template_match and method == "GET":
+                response = self.app.gateway.get_template(template_match.group(1))
+                status = 200
+            elif template_match and method == "POST":
+                response = self.app.gateway.install_template(principal, template_match.group(1), context.request_id)
+                status = 202
+            elif method == "GET" and path == "/api/v1/playground/examples":
+                response = self.app.gateway.playground_examples()
                 status = 200
             elif method == "POST" and path == "/api/v1/webhooks":
                 response = self.app.gateway.request_webhook(principal, self._body(), context.request_id)

@@ -1,0 +1,16 @@
+id: research-agent
+name: Research Report
+version: 1.0.0
+description: Search-only research followed by local analytics and a report.
+agents: [research, analytics]
+skills: [research, analytics]
+permissions:
+  level: LOW
+  filesystem: workspace-read-only
+  network: search-only
+  production: false
+approval_required: false
+created_by: Nexora
+status: ACTIVE
+compatibility:
+  min_platform: 2.1.0

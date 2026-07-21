@@ -15,6 +15,8 @@ from nexora.security.policies import PolicyEngine
 from nexora.skills import SkillRegistry, SkillRegistryError
 from nexora.api.auth import APIKeyService
 from nexora.metrics import MetricsService
+from nexora.playground import PlaygroundService
+from nexora.templates import TemplateApprovalRequired, TemplateRegistry, TemplateRegistryError
 from nexora.webhooks import WebhookService, WebhookValidationError
 
 
@@ -49,6 +51,8 @@ class DashboardAPI:
         metrics: MetricsService,
         namespace: str,
         status_file: Path = Path("/workspace/.nexora-status/health.txt"),
+        templates: TemplateRegistry | None = None,
+        playground: PlaygroundService | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -62,6 +66,8 @@ class DashboardAPI:
         self.metrics = metrics
         self.namespace = namespace
         self.status_file = status_file
+        self.templates = templates
+        self.playground = playground
 
     def health(self) -> dict[str, Any]:
         status = self._safe_status()
@@ -72,6 +78,7 @@ class DashboardAPI:
             "database": "OK" if self.database.check() else "ERROR",
             "agents_loaded": int(registry["enabled"]),
             "skills": self.skills.health(),
+            "templates": self.templates.health() if self.templates is not None else {"ok": False, "loaded": 0, "active": 0},
             "api": self._health_value(status.get("api")),
             "gateway": self._health_value(status.get("openclaw")),
             "tasks": self.database.task_overview(self.namespace),
@@ -140,6 +147,45 @@ class DashboardAPI:
             for item in stored.get("events", [])
         ]
         return value
+
+    def list_templates(self) -> dict[str, Any]:
+        if self.templates is None:
+            raise DashboardAPIError(503, "TEMPLATES_UNAVAILABLE", "Templates are unavailable")
+        return {"items": self.templates.list(), "installations": self.database.list_template_installations(self.namespace)}
+
+    def template_details(self, template_id: str) -> dict[str, Any]:
+        if self.templates is None:
+            raise DashboardAPIError(503, "TEMPLATES_UNAVAILABLE", "Templates are unavailable")
+        try:
+            value = self.templates.info(template_id)
+        except TemplateRegistryError as exc:
+            raise DashboardAPIError(404, "TEMPLATE_NOT_FOUND", "Template not found or unavailable") from exc
+        stored = self.database.get_template_details(template_id)
+        value["events"] = [] if stored is None else stored.get("events", [])
+        return value
+
+    def request_template_install(self, template_id: str, dashboard_session_id: str) -> dict[str, Any]:
+        details = self.template_details(template_id)
+        if details["status"] != "ACTIVE":
+            raise DashboardAPIError(409, "TEMPLATE_UNAVAILABLE", "Template is not active")
+        if details["approval_required"] or details["risk"] == "MEDIUM":
+            approval = self._management_approval(
+                dashboard_session_id,
+                f"template:install:{template_id}",
+                f"Install template {template_id}",
+                "The template requests reviewed capabilities and must be approved before activation.",
+            )
+            return {"status": "WAITING_APPROVAL", "template_id": template_id, **approval}
+        try:
+            result = self.templates.install(self.namespace, template_id)
+        except (TemplateApprovalRequired, TemplateRegistryError) as exc:
+            raise DashboardAPIError(403, "POLICY_DENIED", "Template installation denied") from exc
+        return {"status": result["status"], "template_id": template_id, "installation_id": result["id"]}
+
+    def playground_examples(self) -> dict[str, Any]:
+        if self.playground is None:
+            raise DashboardAPIError(503, "PLAYGROUND_UNAVAILABLE", "Playground is unavailable")
+        return self.playground.examples()
 
     def request_agent_action(self, agent_id: str, action: str, dashboard_session_id: str) -> dict[str, Any]:
         manifest = self.registry.get(agent_id)
@@ -295,6 +341,7 @@ class DashboardAPI:
     def metrics_summary(self) -> dict[str, Any]:
         value = self.metrics.summary(self.namespace)
         value["active_agents"] = sum(1 for item in self.list_agents()["items"] if item["enabled"])
+        value["community"] = self.metrics.community_summary(self.namespace)
         return value
 
     @staticmethod
@@ -367,6 +414,9 @@ class DashboardAPI:
             execution = "COMPLETED"
         elif action_type.startswith("skill:"):
             self._execute_skill_action(action_type, approval_id, task_id)
+            execution = "COMPLETED"
+        elif action_type.startswith("template:"):
+            self._execute_template_action(action_type, approval_id, task_id)
             execution = "COMPLETED"
         elif action_type.startswith("api-key:"):
             one_time_secret = self._execute_api_key_action(action_type, task_id, approval_id)
@@ -466,6 +516,23 @@ class DashboardAPI:
             result_summary=f"Skill action {action} completed for {skill_id}",
         )
         self.tasks.transition(self.namespace, task_id, "COMPLETED", event="SKILL_CONFIGURATION_CHANGED")
+
+    def _execute_template_action(self, action_type: str, approval_id: str, task_id: str) -> None:
+        parts = action_type.split(":", 2)
+        if self.templates is None or len(parts) != 3 or parts[1] != "install" or self.templates.get(parts[2]) is None:
+            raise DashboardAPIError(409, "ACTION_INVALID", "Template action is unavailable")
+        template_id = parts[2]
+        try:
+            result = self.templates.install(self.namespace, template_id, approval_id=approval_id)
+        except (TemplateApprovalRequired, TemplateRegistryError, KeyError, ValueError) as exc:
+            raise DashboardAPIError(409, "TEMPLATE_INSTALL_FAILED", "Template installation failed safely") from exc
+        self.tasks.update_fields(
+            self.namespace,
+            task_id,
+            pending_approval_id=None,
+            result_summary=f"Template {template_id} installed as {result['id']}",
+        )
+        self.tasks.transition(self.namespace, task_id, "COMPLETED", event="TEMPLATE_INSTALLED")
 
     def _execute_api_key_action(self, action_type: str, task_id: str, approval_id: str) -> str | None:
         _, action, key_id = action_type.split(":", 2)

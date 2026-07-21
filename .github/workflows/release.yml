@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - v2.0.0
+      - "v*.*.*"
 
 permissions:
   contents: write
@@ -30,7 +30,7 @@ jobs:
         run: |
           test "$(cat VERSION)" = "${GITHUB_REF_NAME#v}"
           python -m pip install --requirement runtime/requirements.txt pip-audit
-          python -m pytest -q tests integrations/telegram_runtime/tests
+          python -m pytest -q tests dashboard/tests integrations/telegram_runtime/tests
           python examples/demo_content_workflow.py
           python -m pip_audit --requirement requirements-release.txt
           bash scripts/secret-scan.sh
@@ -40,22 +40,22 @@ jobs:
         run: |
           for role in runtime dashboard api; do
             docker build --build-arg "NEXORA_SERVICE=$role" \
-              --tag "nexora/$role:2.0.0" --file Dockerfile.release .
+              --tag "nexora/$role:${GITHUB_REF_NAME#v}" --file Dockerfile.release .
           done
       - name: Build source artifact
         run: bash scripts/build-release-archive.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: nexora-2.0.0-source
+          name: nexora-${{ github.ref_name }}-source
           path: |
-            release-artifacts/nexora-2.0.0.tar.gz
-            release-artifacts/nexora-2.0.0.tar.gz.sha256
+            release-artifacts/nexora-*.tar.gz
+            release-artifacts/nexora-*.tar.gz.sha256
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create v2.0.0 --verify-tag --latest \
-            --title "Nexora v2.0.0" \
-            --notes-file docs/release-notes-v2.0.0.md \
-            release-artifacts/nexora-2.0.0.tar.gz \
-            release-artifacts/nexora-2.0.0.tar.gz.sha256
+          gh release create "$GITHUB_REF_NAME" --verify-tag --latest \
+            --title "Nexora $GITHUB_REF_NAME" \
+            --notes-file "docs/release-notes-$GITHUB_REF_NAME.md" \
+            release-artifacts/nexora-*.tar.gz \
+            release-artifacts/nexora-*.tar.gz.sha256

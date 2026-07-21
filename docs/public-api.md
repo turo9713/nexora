@@ -1,5 +1,14 @@
 # Nexora Public API v1
 
+## Nexora 2.1 community endpoints
+
+- `GET /api/v1/templates` requires `templates:read`.
+- `GET /api/v1/templates/{id}` requires `templates:read`.
+- `POST /api/v1/templates/{id}` requires `templates:install`; medium-risk templates return `WAITING_APPROVAL`.
+- `GET /api/v1/playground/examples` requires `playground:read`.
+
+Authentication, owner isolation, rate limiting, Policy Engine checks, redacted audit events, request IDs, and deny-by-default scopes apply to these endpoints. Playground returns metadata only and cannot execute a task.
+
 The API is a separate process and authenticated facade over TaskService,
 Agent Registry, Skill Registry, Policy Engine, approvals, and owner-isolated
 repositories. It does not import OpenClawProvider or OpenClawTransport and has

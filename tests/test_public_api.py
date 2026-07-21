@@ -89,7 +89,7 @@ def test_rate_limit_per_key_endpoint_owner_and_recovery() -> None:
 def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path: Path) -> None:
     server = create_server(config(tmp_path), use_tls=False)
     app = server.RequestHandlerClass.app
-    _, full_key = issue(app, ["tasks:create", "tasks:read", "agents:read", "skills:read", "webhooks:manage"], "full")
+    _, full_key = issue(app, ["tasks:create", "tasks:read", "agents:read", "skills:read", "templates:read", "templates:install", "playground:read", "webhooks:manage"], "full")
     _, read_key = issue(app, ["tasks:read"], "read-only")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -116,6 +116,18 @@ def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path
         assert response.status == 200 and any(item["id"] == "developer" for item in data["items"])
         response, data = request(connection, "GET", "/api/v1/skills", key=full_key)
         assert response.status == 200 and any(item["id"] == "github-agent" for item in data["items"])
+        response, data = request(connection, "GET", "/api/v1/templates", key=full_key)
+        assert response.status == 200 and any(item["id"] == "content-factory" for item in data["items"])
+        response, data = request(connection, "GET", "/api/v1/templates/code-review", key=full_key)
+        assert response.status == 200 and data["permissions"]["production"] is False
+        response, data = request(connection, "POST", "/api/v1/templates/code-review", key=full_key, body={})
+        assert response.status == 202 and data["status"] == "ACTIVE"
+        response, data = request(connection, "POST", "/api/v1/templates/content-factory", key=full_key, body={})
+        assert response.status == 202 and data["status"] == "WAITING_APPROVAL"
+        response, data = request(connection, "GET", "/api/v1/playground/examples", key=full_key)
+        assert response.status == 200 and data["mode"] == "SANDBOX_ONLY" and data["external_writes"] is False
+        response, data = request(connection, "GET", "/api/v1/templates", key=read_key)
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
         response, data = request(connection, "POST", "/api/v1/webhooks", key=full_key, body={"url": "https://example.com/nexora", "events": ["TASK_COMPLETED"]})
         assert response.status == 202 and data["status"] == "WAITING_APPROVAL"
         assert "secret" not in json.dumps(data).casefold()
@@ -136,4 +148,4 @@ def test_public_api_has_no_gateway_transport_or_secret_config(tmp_path: Path) ->
     source = (PROJECT / "api" / "gateway" / "server.py").read_text(encoding="utf-8").casefold()
     assert "openclaw_provider" not in source and "openclaw_transport" not in source
     specification = yaml.safe_load((PROJECT / "api" / "schemas" / "openapi-v1.yaml").read_text(encoding="utf-8"))
-    assert specification["openapi"] == "3.1.0" and "/tasks" in specification["paths"]
+    assert specification["openapi"] == "3.1.0" and "/tasks" in specification["paths"] and "/templates" in specification["paths"]

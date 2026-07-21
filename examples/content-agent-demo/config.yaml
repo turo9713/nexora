@@ -1,0 +1,4 @@
+template: content-factory
+input: Create an outline about safe self-hosted AI agents.
+mode: sandbox
+external_actions: false

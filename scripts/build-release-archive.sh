@@ -4,10 +4,11 @@ set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 [ -z "$(git status --porcelain)" ] || { echo 'Release archive requires a clean worktree.' >&2; exit 1; }
-[ "$(cat VERSION)" = 2.0.0 ] || { echo 'Unexpected VERSION.' >&2; exit 1; }
+version=$(tr -d '\r\n' < VERSION)
+printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo 'Unexpected VERSION.' >&2; exit 1; }
 mkdir -p release-artifacts
-archive="release-artifacts/nexora-2.0.0.tar.gz"
-git archive --format=tar.gz --prefix=nexora-2.0.0/ --output="$archive.tmp" HEAD
+archive="release-artifacts/nexora-$version.tar.gz"
+git archive --format=tar.gz --prefix="nexora-$version/" --output="$archive.tmp" HEAD
 mv "$archive.tmp" "$archive"
 sha256sum "$archive" > "$archive.sha256"
 if tar -tzf "$archive" | grep -Eq '(^|/)\.env$|(^|/)\.secrets/|runtime/state/.*\.(json|db|sqlite)'; then

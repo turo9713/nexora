@@ -31,6 +31,8 @@ from nexora.security.policies import PolicyEngine
 from nexora.skills import SkillRegistry
 from nexora.api.auth import APIKeyService
 from nexora.metrics import MetricsService
+from nexora.playground import PlaygroundService
+from nexora.templates import TemplateRegistry
 from nexora.webhooks import WebhookService
 
 
@@ -129,7 +131,9 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     api_keys = APIKeyService(database)
     webhooks = WebhookService(database, _read_secret(config.webhook_master_file, 32), audit=audit)
     metrics = MetricsService(database)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace)
+    templates = TemplateRegistry(config.project_root / "templates", database=database, agents=registry, skills=skills, policy=policy, audit=audit, metrics=metrics).load()
+    playground = PlaygroundService(audit)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -153,7 +157,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/1.8"
+    server_version = "NexoraDashboard/2.1"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -197,6 +201,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         try:
             agent_match = re.fullmatch(r"/api/agents/([^/]+)/actions", path)
             skill_match = re.fullmatch(r"/api/skills/([^/]+)/(enable|disable|reload)", path)
+            template_install_match = re.fullmatch(r"/api/templates/([^/]+)/install", path)
             key_action_match = re.fullmatch(r"/api/platform/api-keys/(KEY-[A-F0-9]{12})/(disable|delete)", path)
             webhook_action_match = re.fullmatch(r"/api/platform/webhooks/(WH-[A-F0-9]{12})/(disable|delete)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
@@ -238,6 +243,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.app.api.audit_access(path)
                 self._json(202, response)
                 return
+            if template_install_match:
+                template_id = template_install_match.group(1)
+                if not AGENT_ID.fullmatch(template_id):
+                    raise DashboardAPIError(404, "TEMPLATE_NOT_FOUND", "Template not found")
+                response = self.app.api.request_template_install(template_id, session.session_id)
+                self.app.api.audit_access(path)
+                self._json(202, response)
+                return
             if approval_match:
                 approval_id, decision = approval_match.groups()
                 if not APPROVAL_ID.fullmatch(approval_id):
@@ -267,6 +280,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.list_agents()
             elif path == "/api/skills":
                 response = self.app.api.list_skills()
+            elif path == "/api/templates":
+                response = self.app.api.list_templates()
+            elif path == "/api/playground/examples":
+                response = self.app.api.playground_examples()
             elif path == "/api/approvals":
                 response = self.app.api.list_approvals(query)
             elif path == "/api/audit":
@@ -283,12 +300,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 task_match = re.fullmatch(r"/api/tasks/([^/]+)", path)
                 agent_match = re.fullmatch(r"/api/agents/([^/]+)", path)
                 skill_match = re.fullmatch(r"/api/skills/([^/]+)", path)
+                template_match = re.fullmatch(r"/api/templates/([^/]+)", path)
                 if task_match and TASK_ID.fullmatch(task_match.group(1)):
                     response = self.app.api.task_details(task_match.group(1))
                 elif agent_match and AGENT_ID.fullmatch(agent_match.group(1)):
                     response = self.app.api.agent_details(agent_match.group(1))
                 elif skill_match and SKILL_ID.fullmatch(skill_match.group(1)):
                     response = self.app.api.skill_details(skill_match.group(1))
+                elif template_match and AGENT_ID.fullmatch(template_match.group(1)):
+                    response = self.app.api.template_details(template_match.group(1))
                 else:
                     raise DashboardAPIError(404, "NOT_FOUND", "Ресурс не найден")
             self.app.api.audit_access(path)
@@ -336,6 +356,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "agents:read"
             if path == "/api/skills" or path.startswith("/api/skills/"):
                 return "skills:read"
+            if path == "/api/templates" or path.startswith("/api/templates/"):
+                return "templates:read"
+            if path == "/api/playground/examples":
+                return "playground:read"
             if path == "/api/approvals":
                 return "approvals:read"
             if path == "/api/audit":
@@ -355,6 +379,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "agents:request_change"
             if re.fullmatch(r"/api/skills/[^/]+/(enable|disable|reload)", path):
                 return "skills:request_change"
+            if re.fullmatch(r"/api/templates/[^/]+/install", path):
+                return "templates:install"
             if re.fullmatch(r"/api/approvals/[^/]+/(approve|reject)", path):
                 return "approvals:decide"
             if path == "/api/platform/api-keys" or re.fullmatch(r"/api/platform/api-keys/KEY-[A-F0-9]{12}/(disable|delete)", path):
@@ -398,7 +424,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})

@@ -1,0 +1,5 @@
+template: code-review
+input: Review the sample repository and summarize risks.
+mode: read-only
+push: false
+merge: false

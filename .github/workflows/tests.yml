@@ -28,6 +28,6 @@ jobs:
       - name: Unit and integration tests
         env:
           PYTHONPATH: /workspace
-        run: python -m pytest -q tests integrations/telegram_runtime/tests
+        run: python -m pytest -q tests dashboard/tests integrations/telegram_runtime/tests
       - name: Offline demo
         run: python examples/demo_content_workflow.py

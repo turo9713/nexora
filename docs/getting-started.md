@@ -1,5 +1,14 @@
 # Getting started
 
+## Welcome to Nexora
+
+1. Connect Telegram using a protected secret file.
+2. Select a validated workflow template in Dashboard.
+3. Run the first sandboxed task.
+4. Review the result and any requested approval before an external action.
+
+For a no-side-effect tour, open `/playground`. It exposes examples only and never publishes, writes externally, or reads secrets.
+
 ## Requirements
 
 - Linux host with Docker Engine and Docker Compose v2.

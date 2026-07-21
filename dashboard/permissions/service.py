@@ -22,6 +22,9 @@ class DashboardPermissions:
         "webhooks:manage",
         "metrics:read",
         "integrations:read",
+        "templates:read",
+        "templates:install",
+        "playground:read",
     }
 
     def authorize(self, session: Session | None, permission: str) -> bool:

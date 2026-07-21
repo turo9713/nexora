@@ -1,0 +1,6 @@
+submission: community-skill
+mode: validation-only
+activation: false
+permissions:
+  shell: false
+  production: false
