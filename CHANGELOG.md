@@ -2,6 +2,20 @@
 
 All notable changes follow Semantic Versioning.
 
+## [3.1.0] - 2026-07-21
+
+### Added
+
+- Owner-only Dashboard task creation and bounded web dialogue through the existing OpenClaw provider.
+- Live task progress polling, safe cancellation, approval handoff, and downloadable sanitized text results.
+- Dedicated Dashboard dialogue state with idempotency, 6-hour TTL, 12-turn, and 12,000-character limits.
+
+### Security
+
+- Gateway credentials remain in a read-only secret file and are never returned to the browser or stored in task context.
+- Web task writes require an authenticated admin session, CSRF token, deny-by-default permission, Policy check, and audit event.
+- Dashboard and Telegram dialogue stores are isolated; Gateway remains private.
+
 ## [3.0.0] - 2026-07-21
 
 ### Added

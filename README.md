@@ -90,6 +90,11 @@ the fixed non-root container UID. Every long-running container remains UID
 
 ## Quick Start
 
+After signing in, open **Tasks** to create a task directly from the Dashboard.
+The task card shows live progress and supports bounded follow-up messages,
+approval handoff, cancellation, and a sanitized `.txt` result download.
+Telegram remains available as an independent dialogue surface.
+
 Open the Dashboard URL from the installer and sign in with the one-time password
 shown during installation. Run the offline, non-publishing demo:
 

@@ -9,6 +9,7 @@ class DashboardPermissions:
     ALLOWED = {
         "health:read",
         "tasks:read",
+        "tasks:write",
         "agents:read",
         "agents:request_change",
         "approvals:read",

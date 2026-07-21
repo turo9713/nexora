@@ -23,6 +23,7 @@ from nexora.templates import TemplateApprovalRequired, TemplateRegistry, Templat
 from nexora.webhooks import WebhookService, WebhookValidationError
 from nexora.marketplace import MarketplaceError, MarketplaceService
 from nexora.creators import CreatorError, CreatorService
+from nexora.dashboard.runtime import DashboardTaskRuntime, DashboardTaskRuntimeError
 
 
 TASK_STATUSES = {
@@ -64,6 +65,7 @@ class DashboardAPI:
         marketplace: MarketplaceService | None = None,
         creators: CreatorService | None = None,
         ecosystem: Any | None = None,
+        task_runtime: DashboardTaskRuntime | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -85,6 +87,7 @@ class DashboardAPI:
         self.marketplace = marketplace
         self.creators = creators
         self.ecosystem = ecosystem
+        self.task_runtime = task_runtime
 
     def health(self) -> dict[str, Any]:
         status = self._safe_status()
@@ -106,6 +109,7 @@ class DashboardAPI:
             "agent_ecosystem": "OK" if self.ecosystem is not None and self.database.schema_version() >= 10 else "ERROR",
             "api": self._health_value(status.get("api")),
             "gateway": self._health_value(status.get("openclaw")),
+            "web_runtime": "OK" if self.task_runtime is not None else "WARNING",
             "tasks": self.database.task_overview(self.namespace),
         }
 
@@ -200,7 +204,48 @@ class DashboardAPI:
             }
             for item in task.get("approvals", [])
         ]
+        task["conversation"] = self.task_runtime.conversation(task_id) if self.task_runtime is not None else []
+        task["downloads"] = ([{"id": "result", "name": f"{task_id}-result.txt", "type": "text/plain"}]
+                             if task.get("result_summary") else [])
         return task
+
+    def create_dashboard_task(self, value: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._task_runtime()
+        try:
+            task = runtime.create(self.namespace, value.get("message"), value.get("idempotency_key"))
+        except DashboardTaskRuntimeError as exc:
+            raise DashboardAPIError(exc.status, exc.code, exc.message) from exc
+        stored = self.database.get_task_details(self.namespace, str(task["task_id"]))
+        return self._safe_task(stored or {"id": task["task_id"], **task})
+
+    def continue_dashboard_task(self, task_id: str, value: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._task_runtime()
+        try:
+            task = runtime.continue_task(self.namespace, task_id, value.get("message"), value.get("idempotency_key"))
+        except DashboardTaskRuntimeError as exc:
+            raise DashboardAPIError(exc.status, exc.code, exc.message) from exc
+        stored = self.database.get_task_details(self.namespace, str(task["task_id"]))
+        return self._safe_task(stored or {"id": task["task_id"], **task})
+
+    def cancel_dashboard_task(self, task_id: str) -> dict[str, Any]:
+        runtime = self._task_runtime()
+        try:
+            task = runtime.cancel(self.namespace, task_id)
+        except DashboardTaskRuntimeError as exc:
+            raise DashboardAPIError(exc.status, exc.code, exc.message) from exc
+        stored = self.database.get_task_details(self.namespace, str(task["task_id"]))
+        return self._safe_task(stored or {"id": task["task_id"], **task})
+
+    def task_result_file(self, task_id: str) -> tuple[str, bytes]:
+        task = self.database.get_task_details(self.namespace, task_id)
+        if task is None:
+            raise DashboardAPIError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
+        result = redact_text(task.get("result_summary"), 100_000).strip()
+        if not result:
+            raise DashboardAPIError(404, "RESULT_NOT_FOUND", "Результат пока недоступен")
+        title = redact_text(task.get("title"), 200)
+        content = f"Nexora task {task_id}\nTitle: {title}\nStatus: {task.get('status')}\n\n{result}\n"
+        return f"{task_id}-result.txt", content.encode("utf-8")
 
     def list_agents(self) -> dict[str, Any]:
         return {"items": [self._agent_card(manifest.id) for manifest in self.registry.all()]}
@@ -651,12 +696,18 @@ class DashboardAPI:
             if task is not None and task.get("status") == "WAITING_APPROVAL":
                 self.tasks.update_fields(self.namespace, task_id, pending_approval_id=None)
                 self.tasks.transition(self.namespace, task_id, "CANCELLED", event="APPROVAL_REJECTED")
+            if str(approval.get("action_type") or "").startswith("dashboard-task:") and self.task_runtime is not None:
+                self.task_runtime.context.clear()
             self.audit.record("APPROVAL_DECISION", source="dashboard_api", action_result="REJECTED", approval_id=approval_id, task_id=task_id)
             return {"status": "REJECTED", "task_id": task_id}
 
         action_type = str(updated.get("action_type") or "")
         one_time_secret: str | None = None
-        if action_type.startswith("agent:"):
+        if action_type.startswith("dashboard-task:"):
+            if self.task_runtime is None or not self.task_runtime.resume_approved(self.namespace, task_id):
+                raise DashboardAPIError(409, "TASK_RESUME_FAILED", "Не удалось продолжить задачу")
+            execution = "QUEUED"
+        elif action_type.startswith("agent:"):
             self._execute_agent_action(action_type, approval_id, task_id)
             execution = "COMPLETED"
         elif action_type.startswith("skill:"):
@@ -685,6 +736,11 @@ class DashboardAPI:
             response["one_time_secret"] = one_time_secret
             response["secret_notice"] = "Показано один раз. Сохраните в защищённом хранилище."
         return response
+
+    def _task_runtime(self) -> DashboardTaskRuntime:
+        if self.task_runtime is None:
+            raise DashboardAPIError(503, "DASHBOARD_RUNTIME_UNAVAILABLE", "Веб-исполнитель временно недоступен")
+        return self.task_runtime
 
     def audit_events(self, query: dict[str, str]) -> dict[str, Any]:
         try:

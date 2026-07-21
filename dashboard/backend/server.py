@@ -40,6 +40,7 @@ from nexora.templates import TemplateRegistry
 from nexora.webhooks import WebhookService
 from nexora.marketplace import MarketplaceService
 from nexora.creators import CreatorService
+from nexora.dashboard.runtime import DashboardTaskRuntime, build_openclaw_orchestrator
 
 
 COOKIE_NAME = "__Host-nexora_session"
@@ -64,6 +65,9 @@ class DashboardConfig:
     tls_key_file: Path | None = Path("/run/secrets/dashboard_tls_key")
     webhook_master_file: Path = Path("/run/secrets/api_webhook_master")
     agent_memory_key_file: Path = Path("/run/secrets/agent_memory_key")
+    gateway_token_file: Path = Path("/run/secrets/openclaw_gateway_token")
+    gateway_endpoint: str = "http://nexora-openclaw-gateway:18789/v1/responses"
+    gateway_timeout_seconds: float = 120.0
     allowed_origins: tuple[str, ...] = ("https://127.0.0.1:18880", "https://localhost:18880")
     session_ttl_seconds: int = 1800
 
@@ -147,7 +151,16 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     marketplace = MarketplaceService(database, teams, policy, audit)
     creators = CreatorService(database, marketplace, teams, policy, audit, administrator=namespace)
     ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_read_secret(config.agent_memory_key_file, 32))
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem)
+    task_runtime = None
+    if config.gateway_token_file.is_file() and not config.gateway_token_file.is_symlink():
+        orchestrator = build_openclaw_orchestrator(
+            config.project_root,
+            config.gateway_token_file,
+            config.gateway_endpoint,
+            config.gateway_timeout_seconds,
+        )
+        task_runtime = DashboardTaskRuntime(orchestrator, tasks, approvals, audit, policy, config.state_root, events)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -171,7 +184,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/3.0"
+    server_version = "NexoraDashboard/3.1"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -223,6 +236,23 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             marketplace_install_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})/install", path)
             creator_action_match = re.fullmatch(r"/api/creator/packages/([a-z0-9][a-z0-9-]{1,62})/([0-9]+\.[0-9]+\.[0-9]+)/(submit|validate|publish)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
+            task_message_match = re.fullmatch(r"/api/tasks/([A-Za-z0-9-]{3,100})/messages", path)
+            task_cancel_match = re.fullmatch(r"/api/tasks/([A-Za-z0-9-]{3,100})/cancel", path)
+            if path == "/api/tasks":
+                response = self.app.api.create_dashboard_task(body)
+                self.app.api.audit_access(path)
+                self._json(202, response)
+                return
+            if task_message_match:
+                response = self.app.api.continue_dashboard_task(task_message_match.group(1), body)
+                self.app.api.audit_access(path)
+                self._json(202, response)
+                return
+            if task_cancel_match:
+                response = self.app.api.cancel_dashboard_task(task_cancel_match.group(1))
+                self.app.api.audit_access(path)
+                self._json(200, response)
+                return
             if path == "/api/agent-center":
                 response = self.app.api.create_custom_agent(body, session.session_id); self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response); return
             if path == "/api/agent-teams":
@@ -339,6 +369,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if session is None:
             return
         try:
+            result_download_match = re.fullmatch(r"/api/tasks/([A-Za-z0-9-]{3,100})/downloads/result", path)
+            if result_download_match:
+                filename, content = self.app.api.task_result_file(result_download_match.group(1))
+                self.app.api.audit_access(path)
+                self._download(filename, content)
+                return
             if path == "/api/session":
                 response: Any = {"authenticated": True, "csrf_token": session.csrf_token, "expires_at": session.expires_at}
             elif path == "/api/health":
@@ -514,6 +550,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if method == "POST":
             if path == "/api/logout":
                 return "health:read"
+            if path == "/api/tasks" or re.fullmatch(r"/api/tasks/[^/]+/(messages|cancel)", path):
+                return "tasks:write"
             if re.fullmatch(r"/api/agents/[^/]+/actions", path):
                 return "agents:request_change"
             if re.fullmatch(r"/api/skills/[^/]+/(enable|disable|reload)", path):
@@ -609,6 +647,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", f"{COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
         self.end_headers()
         self.wfile.write(payload)
+
+    def _download(self, filename: str, content: bytes) -> None:
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", filename)[:160] or "nexora-result.txt"
+        self.send_response(200)
+        self._security_headers()
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(content)
 
     def _security_headers(self) -> None:
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")

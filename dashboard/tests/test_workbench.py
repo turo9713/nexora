@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import os
+import http.client
+import json
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from nexora.dashboard.api import DashboardAPIError
+from nexora.dashboard.runtime import DashboardTaskRuntime
+from nexora.dashboard.backend.server import COOKIE_NAME, DashboardRequestHandler
+
+from .conftest import NAMESPACE, ORIGIN, PASSWORD
+
+
+class FakeOrchestrator:
+    def run_task(self, task: dict, workflow_name: str) -> dict:
+        latest = str(task["description"]).split("OWNER:")[-1].strip()
+        text = f"WEB_OK: {latest}"
+        return {
+            "result": {
+                "summary": text,
+                "details": {
+                    "transport_response": {
+                        "response": {"output": [{"content": [{"type": "output_text", "text": text}]}]}
+                    }
+                },
+            }
+        }
+
+
+def attach_runtime(app, config, orchestrator=None) -> DashboardTaskRuntime:
+    runtime = DashboardTaskRuntime(
+        orchestrator or FakeOrchestrator(),
+        app.api.tasks,
+        app.api.approvals,
+        app.api.audit,
+        app.api.policy,
+        config.state_root,
+    )
+    app.api.task_runtime = runtime
+    return runtime
+
+
+def wait_for(app, task_id: str, status: str = "COMPLETED") -> dict:
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        stored = app.api.database.get_task_details(NAMESPACE, task_id)
+        if stored and stored.get("status") == status:
+            return app.api.tasks.get(NAMESPACE, task_id) or stored
+        time.sleep(0.02)
+    raise AssertionError(f"task did not reach {status}")
+
+
+def test_dashboard_create_continue_idempotency_and_safe_download(dashboard_factory) -> None:
+    app, config = dashboard_factory()
+    runtime = attach_runtime(app, config)
+    first = app.api.create_dashboard_task({"message": "Составь безопасный план", "idempotency_key": "request-0001"})
+    repeated = app.api.create_dashboard_task({"message": "Не должно дублироваться", "idempotency_key": "request-0001"})
+    assert repeated["id"] == first["id"]
+    completed = wait_for(app, first["id"])
+    assert completed["result_summary"].startswith("WEB_OK")
+
+    continued = app.api.continue_dashboard_task(
+        first["id"],
+        {"message": "Продолжи и не показывай token=fixture-super-secret", "idempotency_key": "message-0001"},
+    )
+    assert continued["id"] == first["id"]
+    completed = wait_for(app, first["id"])
+    assert completed["turn_number"] == 2
+    details = app.api.task_details(first["id"])
+    assert len(details["conversation"]) == 4
+    assert "fixture-super-secret" not in str(details)
+    assert details["downloads"][0]["id"] == "result"
+    filename, payload = app.api.task_result_file(first["id"])
+    assert filename.endswith("-result.txt") and b"WEB_OK" in payload
+    assert b"fixture-super-secret" not in payload
+
+    context_root = config.state_root / "dashboard_sessions"
+    assert context_root.is_dir() and not context_root.is_symlink()
+    assert (context_root / "active.json").is_file() and not (context_root / "active.json").is_symlink()
+    if os.name != "nt":
+        assert os.stat(context_root).st_mode & 0o777 == 0o700
+        assert os.stat(context_root / "active.json").st_mode & 0o777 == 0o600
+    runtime.execution.shutdown()
+
+
+def test_dashboard_policy_approval_and_cancel(dashboard_factory) -> None:
+    app, config = dashboard_factory()
+    runtime = attach_runtime(app, config)
+    pending = app.api.create_dashboard_task({"message": "restart service safely", "idempotency_key": "approval-0001"})
+    assert pending["status"] == "WAITING_APPROVAL"
+    approval_id = app.api.tasks.get(NAMESPACE, pending["id"])["pending_approval_id"]
+    approved = app.api.decide_approval(approval_id, "approve")
+    assert approved["execution"] == "QUEUED"
+    wait_for(app, pending["id"])
+
+    next_task = app.api.create_dashboard_task({"message": "Новая безопасная задача", "idempotency_key": "cancel-0001"})
+    cancelled = app.api.cancel_dashboard_task(next_task["id"])
+    assert cancelled["status"] in {"CANCELLED", "COMPLETED"}
+    runtime.execution.shutdown()
+
+
+def test_dashboard_runtime_rejects_forbidden_and_cross_task_access(dashboard_factory) -> None:
+    app, config = dashboard_factory()
+    runtime = attach_runtime(app, config)
+    with pytest.raises(DashboardAPIError) as denied:
+        app.api.create_dashboard_task({"message": "rm -rf /", "idempotency_key": "denied-0001"})
+    assert denied.value.code == "NX_PERMISSION_DENIED"
+    with pytest.raises(DashboardAPIError) as missing:
+        app.api.continue_dashboard_task("NX-NOT-AVAILABLE", {"message": "test", "idempotency_key": "missing-0001"})
+    assert missing.value.code == "NX_TASK_NOT_FOUND"
+    runtime.execution.shutdown()
+
+
+def test_dashboard_workbench_http_create_status_and_download(dashboard_factory) -> None:
+    app, config = dashboard_factory()
+    runtime = attach_runtime(app, config)
+
+    class Handler(DashboardRequestHandler):
+        pass
+
+    Handler.app = app
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+
+    def call(method: str, path: str, body=None, cookie=None, csrf=None):
+        headers = {"Origin": ORIGIN, "Accept": "application/json"}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body)
+            headers["Content-Type"] = "application/json"
+        if cookie:
+            headers["Cookie"] = f"{COOKIE_NAME}={cookie}"
+        if csrf:
+            headers["X-CSRF-Token"] = csrf
+        connection.request(method, path, body=payload, headers=headers)
+        response = connection.getresponse()
+        raw = response.read()
+        return response, json.loads(raw) if raw else {}
+
+    try:
+        response, login = call("POST", "/api/login", {"username": "admin", "password": PASSWORD})
+        assert response.status == 200
+        cookie = response.getheader("Set-Cookie").split(";", 1)[0].split("=", 1)[1]
+        response, created = call("POST", "/api/tasks", {"message": "HTTP web task", "idempotency_key": "http-0001"}, cookie, login["csrf_token"])
+        assert response.status == 202 and created["id"].startswith("NX-")
+        wait_for(app, created["id"])
+        response, details = call("GET", f"/api/tasks/{created['id']}", cookie=cookie)
+        assert response.status == 200 and details["status"] == "COMPLETED"
+
+        connection.request("GET", f"/api/tasks/{created['id']}/downloads/result", headers={"Origin": ORIGIN, "Cookie": f"{COOKIE_NAME}={cookie}"})
+        response = connection.getresponse()
+        payload = response.read()
+        assert response.status == 200 and response.getheader("Content-Disposition").startswith("attachment;")
+        assert b"WEB_OK" in payload
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        runtime.execution.shutdown()
