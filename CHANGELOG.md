@@ -2,6 +2,20 @@
 
 All notable changes follow Semantic Versioning.
 
+## [2.5.0] - 2026-07-21
+
+### Added
+
+- Owner-isolated creator profiles, Creator Dashboard, package analytics, reviews, verification levels, and quality grades.
+- Immutable semantic package versions with draft, validation, publication, archive, and approval-protected rollback lifecycles.
+- Scoped Creator API reads and reversible SQLite migration 009.
+
+### Security
+
+- Creator administration remains RBAC-, Policy-, Approval-, and Audit-gated; public endpoints expose sanitized profile data only.
+- Published checksums and manifests are database-protected and cannot be replaced or deleted.
+- No payment data, third-party code execution, production access, or weaker Marketplace validation was introduced.
+
 ## [2.4.0] - 2026-07-21
 
 ### Added

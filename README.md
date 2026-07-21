@@ -3,8 +3,8 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 2.4 adds a security-reviewed Marketplace foundation for declarative,
-versioned Agents, Skills, Templates, and Integrations. The repository contains the open-source
+Nexora 2.5 adds a Creator Economy control plane on top of the security-reviewed
+Marketplace for declarative, versioned Agents, Skills, Templates, and Integrations. The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -29,6 +29,8 @@ deliberately outside the public boundary.
 - Approval-only plan changes and organization blocking; no payment processor.
 - Verified publishers, checksum-protected packages, tenant-isolated installs,
   reviews, and community-license metadata with no automatic code execution.
+- Owner-isolated creator profiles, immutable package releases, trusted-creator
+  verification, quality scoring, and privacy-preserving creator analytics.
 
 ## Architecture
 
@@ -135,6 +137,18 @@ and integrations require the existing one-time approval flow. See
 [Marketplace](docs/marketplace.md), [publishing](docs/publishing.md),
 [package format](docs/package-format.md), and
 [Marketplace security](docs/security-marketplace.md).
+
+## Creator Economy
+
+The authenticated `/creator` Dashboard contains My Packages, Analytics, Reviews,
+Verification, and Settings views. Public API clients can read sanitized profiles
+with `creators:read`; private package and analytics endpoints require
+`creator:read` and resolve the owner from the API key. Package publication still
+passes the existing Marketplace validator and immutable checksum controls.
+Verification, suspension, archive, and rollback are administrative actions that
+require Policy Engine authorization, an exact one-time approval, and an audit
+event. See [Creator Guide](docs/creator-guide.md), [Creator Analytics](docs/analytics.md),
+[Verification](docs/verification.md), and [Publishing](docs/publishing.md).
 
 ## Security
 

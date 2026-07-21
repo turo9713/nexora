@@ -1,5 +1,13 @@
 # Dashboard API
 
+## Creator endpoints (v2.5)
+
+The internal authenticated API exposes `/api/creator` for the owner-scoped
+Creator Dashboard and protected profile/draft/lifecycle operations. The public
+facade exposes `GET /api/v1/creators/{id}` (`creators:read`) plus owner-derived
+`GET /api/v1/creator/packages` and `/creator/analytics` (`creator:read`). It
+never accepts an owner namespace from the client.
+
 This document covers the internal Dashboard API. The external versioned facade
 is described in `public-api.md` and its OpenAPI document is
 `api/schemas/openapi-v1.yaml`.

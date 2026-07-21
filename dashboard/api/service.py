@@ -22,6 +22,7 @@ from nexora.playground import PlaygroundService
 from nexora.templates import TemplateApprovalRequired, TemplateRegistry, TemplateRegistryError
 from nexora.webhooks import WebhookService, WebhookValidationError
 from nexora.marketplace import MarketplaceError, MarketplaceService
+from nexora.creators import CreatorError, CreatorService
 
 
 TASK_STATUSES = {
@@ -61,6 +62,7 @@ class DashboardAPI:
         billing: BillingFoundation | None = None,
         admin_console: AdminConsole | None = None,
         marketplace: MarketplaceService | None = None,
+        creators: CreatorService | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -80,6 +82,7 @@ class DashboardAPI:
         self.billing = billing
         self.admin_console = admin_console
         self.marketplace = marketplace
+        self.creators = creators
 
     def health(self) -> dict[str, Any]:
         status = self._safe_status()
@@ -97,6 +100,7 @@ class DashboardAPI:
             },
             "billing": "OK" if self.billing is not None else "WARNING",
             "marketplace": "OK" if self.marketplace is not None and self.database.schema_version() >= 8 else "ERROR",
+            "creators": "OK" if self.creators is not None and self.database.schema_version() >= 9 else "ERROR",
             "api": self._health_value(status.get("api")),
             "gateway": self._health_value(status.get("openclaw")),
             "tasks": self.database.task_overview(self.namespace),
@@ -266,6 +270,43 @@ class DashboardAPI:
 
     def marketplace_my_items(self) -> dict[str, Any]:
         return {"items": self._marketplace().my_items(self.namespace), "publishers": self.database.list_publishers(self.namespace)}
+
+    def creator_dashboard(self) -> dict[str, Any]:
+        service = self._creators()
+        try:
+            profile = service.my_profile(self.namespace)
+            return {"configured": True, "profile": profile, "packages": service.packages(self.namespace), "analytics": service.analytics(self.namespace)}
+        except CreatorError as exc:
+            if exc.code == "CREATOR_NOT_FOUND":
+                return {"configured": False, "profile": None, "packages": [], "analytics": {}}
+            raise DashboardAPIError(403, exc.code, "Creator dashboard unavailable") from exc
+
+    def create_creator_profile(self, value: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self._creators().create_profile(self.namespace, str(value.get("display_name") or ""), str(value.get("bio") or ""), str(value.get("avatar_reference") or "") or None)
+        except CreatorError as exc:
+            raise DashboardAPIError(400, exc.code, "Creator profile rejected") from exc
+
+    def create_creator_draft(self, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value.get("manifest"), dict):
+            raise DashboardAPIError(400, "CREATOR_MANIFEST_INVALID", "Manifest is required")
+        try:
+            return self._creators().create_draft(self.namespace, value["manifest"], str(value.get("changelog") or ""))
+        except CreatorError as exc:
+            raise DashboardAPIError(400, exc.code, "Creator package rejected") from exc
+
+    def creator_version_action(self, package_id: str, version: str, action: str) -> dict[str, Any]:
+        service = self._creators()
+        try:
+            if action == "submit":
+                return service.submit(self.namespace, package_id, version)
+            if action == "validate":
+                return service.validate_version(self.namespace, package_id, version)
+            if action == "publish":
+                return service.publish(self.namespace, package_id, version)
+        except CreatorError as exc:
+            raise DashboardAPIError(409, exc.code, "Creator package action denied") from exc
+        raise DashboardAPIError(400, "CREATOR_ACTION_INVALID", "Creator action is invalid")
 
     def register_publisher(self, value: dict[str, Any], session_id: str) -> dict[str, Any]:
         try:
@@ -620,6 +661,11 @@ class DashboardAPI:
         if self.marketplace is None:
             raise DashboardAPIError(503, "MARKETPLACE_UNAVAILABLE", "Marketplace unavailable")
         return self.marketplace
+
+    def _creators(self) -> CreatorService:
+        if self.creators is None:
+            raise DashboardAPIError(503, "CREATOR_UNAVAILABLE", "Creator service unavailable")
+        return self.creators
 
     def _execute_agent_action(self, action_type: str, approval_id: str, task_id: str) -> None:
         parts = action_type.split(":", 2)

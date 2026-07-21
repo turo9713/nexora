@@ -31,6 +31,7 @@ from nexora.skills import SkillRegistry
 from nexora.templates import TemplateRegistry
 from nexora.webhooks import WebhookService
 from nexora.marketplace import MarketplaceService
+from nexora.creators import CreatorService
 
 
 MAX_BODY = 32 * 1024
@@ -55,6 +56,8 @@ ROUTES = {
     ("GET", "/api/v1/limits"): ("limits:read", 60),
     ("GET", "/api/v1/marketplace"): ("marketplace:read", 60),
     ("POST", "/api/v1/marketplace/publish"): ("marketplace:publish", 10),
+    ("GET", "/api/v1/creator/packages"): ("creator:read", 60),
+    ("GET", "/api/v1/creator/analytics"): ("creator:read", 60),
     ("POST", "/api/v1/webhooks"): ("webhooks:manage", 10),
     ("GET", "/api/v1/webhooks"): ("webhooks:manage", 30),
 }
@@ -101,7 +104,7 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
         database=database,
         audit=audit,
         agent_registry=agents,
-        platform_version="2.4.0",
+        platform_version="2.5.0",
     ).load()
     events = EventBus([SQLiteEventSink(database)])
     tasks = TaskService(TaskRepository(config.state_root / "tasks"), database=database, event_bus=events)
@@ -113,7 +116,8 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
     teams = TeamService(database, policy, audit)
     billing = BillingFoundation(database, audit)
     marketplace = MarketplaceService(database, teams, policy, audit)
-    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, policy, tasks, approvals, webhooks, metrics)
+    creators = CreatorService(database, marketplace, teams, policy, audit)
+    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics)
     return PublicAPIApplication(gateway, APIKeyService(database), APIRateLimiter(), audit, metrics)
 
 
@@ -137,7 +141,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/2.4"
+    server_version = "NexoraAPI/2.5"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -157,12 +161,15 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
         task_match = re.fullmatch(r"/api/v1/tasks/([^/]+)", path) if method == "GET" else None
         template_match = re.fullmatch(r"/api/v1/templates/([^/]+)", path)
         marketplace_match = re.fullmatch(r"/api/v1/marketplace/([a-z0-9][a-z0-9-]{1,62})(?:/(install))?", path)
+        creator_match = re.fullmatch(r"/api/v1/creators/(CRT-[A-F0-9]{12})", path)
         if route is None and task_match and TASK_ID.fullmatch(task_match.group(1)):
             route = ("tasks:read", 60)
         if route is None and template_match and TASK_ID.fullmatch(template_match.group(1)):
             route = ("templates:install" if method == "POST" else "templates:read", 10 if method == "POST" else 60)
         if route is None and marketplace_match:
             route = ("marketplace:install" if method == "POST" else "marketplace:read", 10 if method == "POST" else 60)
+        if route is None and creator_match and method == "GET":
+            route = ("creators:read", 60)
         if route is None:
             if path.startswith("/api/"):
                 self.app.audit.record("API_DENIED", severity="SECURITY", source="public_api", action_result="NOT_FOUND", request_id=context.request_id, method=method, endpoint=path)
@@ -219,6 +226,15 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             elif marketplace_match and method == "POST" and marketplace_match.group(2) == "install":
                 response = self.app.gateway.install_marketplace_item(principal, marketplace_match.group(1), self._body(), context.request_id)
                 status = 202 if response.get("status") == "WAITING_APPROVAL" else 201
+            elif creator_match and method == "GET":
+                response = self.app.gateway.creator_profile(creator_match.group(1))
+                status = 200
+            elif method == "GET" and path == "/api/v1/creator/packages":
+                response = self.app.gateway.creator_packages(principal)
+                status = 200
+            elif method == "GET" and path == "/api/v1/creator/analytics":
+                response = self.app.gateway.creator_analytics(principal)
+                status = 200
             elif template_match and method == "GET":
                 response = self.app.gateway.get_template(template_match.group(1))
                 status = 200

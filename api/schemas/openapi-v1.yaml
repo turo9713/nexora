@@ -1,13 +1,31 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 1.4.0
+  version: 1.5.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
 security:
   - bearerAuth: []
 paths:
+  /creators/{id}:
+    get:
+      operationId: getCreator
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^CRT-[A-F0-9]{12}$"}}
+      responses:
+        "200": {description: Sanitized public creator profile}
+        "404": {description: Creator not found or unavailable}
+  /creator/packages:
+    get:
+      operationId: listOwnCreatorPackages
+      responses:
+        "200": {description: API-key-owner package versions}
+  /creator/analytics:
+    get:
+      operationId: getOwnCreatorAnalytics
+      responses:
+        "200": {description: API-key-owner creator analytics}
   /tasks:
     get:
       operationId: listTasks

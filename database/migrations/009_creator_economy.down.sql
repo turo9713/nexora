@@ -1,0 +1,16 @@
+DROP INDEX IF EXISTS idx_review_votes_review;
+DROP INDEX IF EXISTS idx_creator_metrics_package;
+DROP INDEX IF EXISTS idx_package_versions_package;
+DROP INDEX IF EXISTS idx_package_versions_creator;
+DROP INDEX IF EXISTS idx_creator_profiles_status;
+DROP TRIGGER IF EXISTS creator_metrics_no_delete;
+DROP TRIGGER IF EXISTS creator_metrics_no_update;
+DROP TRIGGER IF EXISTS package_versions_no_delete;
+DROP TRIGGER IF EXISTS package_versions_protect_published;
+DROP TABLE IF EXISTS review_votes;
+DROP TABLE IF EXISTS quality_scores;
+DROP TABLE IF EXISTS creator_metrics;
+DROP TABLE IF EXISTS creator_verification;
+DROP TABLE IF EXISTS package_versions;
+DROP TABLE IF EXISTS creator_profiles;
+DELETE FROM schema_migrations WHERE version=9;

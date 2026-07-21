@@ -1,5 +1,12 @@
 # Dashboard setup and use
 
+## Creator Dashboard
+
+`/creator` is an authenticated admin-session view with My Packages, Analytics,
+Reviews, Verification, and Settings sections. The browser has no direct access
+to SQLite or OpenClaw. Requests pass Dashboard authorization, Creator Service,
+Marketplace validation, Policy Engine, approvals where required, and audit.
+
 Nexora 2.2 adds authenticated `/organizations`, `/workspaces`, `/members`, and
 `/knowledge` views. These pages call the Dashboard API, which resolves the
 dashboard owner namespace through TeamService. Frontend code has no SQLite,

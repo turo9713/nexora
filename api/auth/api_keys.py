@@ -33,6 +33,8 @@ API_SCOPES = {
     "marketplace:read",
     "marketplace:install",
     "marketplace:publish",
+    "creators:read",
+    "creator:read",
 }
 KEY_PATTERN = re.compile(r"^nx_live_([a-f0-9]{12})_([A-Za-z0-9_-]{32,})$")
 

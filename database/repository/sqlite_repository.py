@@ -56,6 +56,7 @@ class SQLiteRepository:
             (6, self.migrations_root / "006_teams.sql"),
             (7, self.migrations_root / "007_cloud_billing.sql"),
             (8, self.migrations_root / "008_marketplace.sql"),
+            (9, self.migrations_root / "009_creator_economy.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -65,8 +66,8 @@ class SQLiteRepository:
                     applied = None
                 if applied is not None:
                     continue
-                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8} else None
-                if version in {6, 7, 8} and current_version == version - 1:
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9} else None
+                if version in {6, 7, 8, 9} and current_version == version - 1:
                     connection.commit()
                     self._backup_before_version(connection, version)
                 connection.executescript(path.read_text(encoding="utf-8"))
@@ -74,7 +75,7 @@ class SQLiteRepository:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
-                if version in {6, 7, 8} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                if version in {6, 7, 8, 9} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError(f"migration {version:03d} integrity check failed")
         self._secure_database()
         return self.schema_version()
@@ -103,13 +104,13 @@ class SQLiteRepository:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def rollback(self, version: int = 8) -> None:
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8}:
+    def rollback(self, version: int = 9) -> None:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -241,7 +242,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 8
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 9
         except sqlite3.Error:
             return False
 
@@ -1433,3 +1434,163 @@ class SQLiteRepository:
         with self._connect() as connection:
             rows = connection.execute("SELECT id,event,result,metadata,created_at FROM marketplace_events WHERE item_id=? ORDER BY created_at DESC LIMIT ?", (item_id,max(1,min(200,int(limit))))).fetchall()
         return [dict(row) for row in rows]
+
+    # Creator Economy v2.5 repositories.
+    def create_creator_profile(self, value: dict[str, Any]) -> dict[str, Any]:
+        user_id = self.ensure_user(str(value["owner"]))
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO creator_profiles(id,user_id,publisher_id,display_name,bio,avatar_reference,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (value["id"],user_id,value["publisher_id"],value["display_name"],value["bio"],value.get("avatar_reference"),value["status"],value["created_at"],value["updated_at"]),
+            )
+            connection.execute(
+                "INSERT INTO creator_verification(creator_id,level,status,verified_at,updated_at) VALUES(?,'NEW_CREATOR','PENDING',NULL,?)",
+                (value["id"],value["updated_at"]),
+            )
+        self._secure_database()
+        return self.get_creator_profile(str(value["id"])) or {}
+
+    def get_creator_profile(self, creator_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT c.id,c.publisher_id,c.display_name,c.bio,c.avatar_reference,c.status,c.created_at,c.updated_at,v.level,v.status verification_status,v.verified_at "
+                "FROM creator_profiles c JOIN creator_verification v ON v.creator_id=c.id WHERE c.id=?",
+                (creator_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def get_creator_for_owner(self, owner: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT c.id,c.publisher_id,c.display_name,c.bio,c.avatar_reference,c.status,c.created_at,c.updated_at,v.level,v.status verification_status,v.verified_at "
+                "FROM creator_profiles c JOIN users u ON u.id=c.user_id JOIN creator_verification v ON v.creator_id=c.id WHERE u.external_hash=?",
+                (owner,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def update_creator_profile(self, creator_id: str, *, display_name: str | None = None, bio: str | None = None, avatar_reference: str | None = None, status: str | None = None) -> None:
+        fields: list[str] = []
+        values: list[Any] = []
+        for column, value in (("display_name",display_name),("bio",bio),("avatar_reference",avatar_reference),("status",status)):
+            if value is not None:
+                fields.append(f"{column}=?")
+                values.append(value)
+        if not fields:
+            return
+        fields.append("updated_at=?")
+        values.extend((utc_now(),creator_id))
+        with self._connect() as connection:
+            connection.execute(f"UPDATE creator_profiles SET {','.join(fields)} WHERE id=?", tuple(values))
+        self._secure_database()
+
+    def set_creator_verification(self, creator_id: str, level: str, status: str, verified_at: str | None) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE creator_verification SET level=?,status=?,verified_at=?,updated_at=? WHERE creator_id=?", (level,status,verified_at,utc_now(),creator_id))
+        self._secure_database()
+
+    def insert_creator_package_version(self, value: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO package_versions(id,package_id,creator_id,version,manifest,checksum,changelog,compatibility,status,created_at,updated_at,published_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (value["id"],value["package_id"],value["creator_id"],value["version"],value["manifest"],value["checksum"],value["changelog"],value["compatibility"],value["status"],value["created_at"],value["updated_at"],value.get("published_at")),
+            )
+        self._secure_database()
+
+    def update_creator_package_version(self, creator_id: str, package_id: str, version: str, *, manifest: str | None = None, checksum: str | None = None, changelog: str | None = None, compatibility: str | None = None, status: str | None = None, published_at: str | None = None) -> bool:
+        fields: list[str] = []
+        values: list[Any] = []
+        for column, value in (("manifest",manifest),("checksum",checksum),("changelog",changelog),("compatibility",compatibility),("status",status),("published_at",published_at)):
+            if value is not None:
+                fields.append(f"{column}=?")
+                values.append(value)
+        fields.append("updated_at=?")
+        values.extend((utc_now(),creator_id,package_id,version))
+        with self._connect() as connection:
+            changed = connection.execute(f"UPDATE package_versions SET {','.join(fields)} WHERE creator_id=? AND package_id=? AND version=?", tuple(values)).rowcount
+        self._secure_database()
+        return changed == 1
+
+    def get_creator_package_version(self, creator_id: str, package_id: str, version: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT id,package_id,creator_id,version,manifest,checksum,changelog,compatibility,status,created_at,updated_at,published_at FROM package_versions WHERE creator_id=? AND package_id=? AND version=?", (creator_id,package_id,version)).fetchone()
+        return None if row is None else dict(row)
+
+    def list_creator_package_versions(self, creator_id: str, package_id: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT id,package_id,version,checksum,changelog,compatibility,status,created_at,updated_at,published_at FROM package_versions WHERE creator_id=?"
+        values: list[Any] = [creator_id]
+        if package_id is not None:
+            sql += " AND package_id=?"
+            values.append(package_id)
+        sql += " ORDER BY package_id,created_at DESC"
+        with self._connect() as connection:
+            rows = connection.execute(sql,tuple(values)).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_marketplace_current_version(self, item_id: str, version: str) -> bool:
+        with self._connect() as connection:
+            exists = connection.execute("SELECT 1 FROM packages WHERE item_id=? AND version=? AND validation_status='APPROVED'", (item_id,version)).fetchone()
+            if exists is None:
+                return False
+            changed = connection.execute("UPDATE marketplace_items SET current_version=?,updated_at=? WHERE id=?", (version,utc_now(),item_id)).rowcount
+        self._secure_database()
+        return changed == 1
+
+    def record_creator_metric(self, value: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT INTO creator_metrics(id,creator_id,package_id,metric,value,result,created_at) VALUES(?,?,?,?,?,?,?)", (value["id"],value["creator_id"],value.get("package_id"),value["metric"],int(value["value"]),value["result"],value["created_at"]))
+        self._secure_database()
+
+    def creator_analytics(self, creator_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM marketplace_items m JOIN creator_profiles c ON c.publisher_id=m.author_id WHERE c.id=?) packages,"
+                "(SELECT COUNT(*) FROM marketplace_installations i JOIN marketplace_items m ON m.id=i.item_id JOIN creator_profiles c ON c.publisher_id=m.author_id WHERE c.id=?) total_installs,"
+                "(SELECT COUNT(*) FROM marketplace_installations i JOIN marketplace_items m ON m.id=i.item_id JOIN creator_profiles c ON c.publisher_id=m.author_id WHERE c.id=? AND i.status='ACTIVE') active_installations,"
+                "(SELECT COALESCE(SUM(value),0) FROM creator_metrics WHERE creator_id=? AND metric='EXECUTION') executions,"
+                "(SELECT COALESCE(SUM(value),0) FROM creator_metrics WHERE creator_id=? AND metric='SUCCESS') successes,"
+                "(SELECT COALESCE(SUM(value),0) FROM creator_metrics WHERE creator_id=? AND metric='ERROR') errors,"
+                "(SELECT COUNT(*) FROM reviews r JOIN marketplace_items m ON m.id=r.item_id JOIN creator_profiles c ON c.publisher_id=m.author_id WHERE c.id=?) reviews,"
+                "(SELECT COALESCE(AVG(r.rating),0) FROM reviews r JOIN marketplace_items m ON m.id=r.item_id JOIN creator_profiles c ON c.publisher_id=m.author_id WHERE c.id=?) rating",
+                (creator_id,creator_id,creator_id,creator_id,creator_id,creator_id,creator_id,creator_id),
+            ).fetchone()
+        executions = int(row["executions"])
+        successes = int(row["successes"])
+        return {"packages":int(row["packages"]),"total_installs":int(row["total_installs"]),"active_installations":int(row["active_installations"]),"executions":executions,"successes":successes,"errors":int(row["errors"]),"reviews":int(row["reviews"]),"rating":round(float(row["rating"]),2),"success_rate":round((successes / executions * 100) if executions else 100.0,2)}
+
+    def creator_package_analytics(self, creator_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT m.id,m.name,m.current_version version,"
+                "COUNT(DISTINCT i.id) total_installs,COUNT(DISTINCT CASE WHEN i.status='ACTIVE' THEN i.id END) active_installations,"
+                "COALESCE((SELECT SUM(value) FROM creator_metrics cm WHERE cm.creator_id=? AND cm.package_id=m.id AND cm.metric='EXECUTION'),0) executions,"
+                "COALESCE((SELECT SUM(value) FROM creator_metrics cm WHERE cm.creator_id=? AND cm.package_id=m.id AND cm.metric='SUCCESS'),0) successes,"
+                "COALESCE((SELECT SUM(value) FROM creator_metrics cm WHERE cm.creator_id=? AND cm.package_id=m.id AND cm.metric='ERROR'),0) errors,"
+                "COALESCE(AVG(r.rating),0) rating FROM marketplace_items m JOIN creator_profiles c ON c.publisher_id=m.author_id "
+                "LEFT JOIN marketplace_installations i ON i.item_id=m.id LEFT JOIN reviews r ON r.item_id=m.id WHERE c.id=? GROUP BY m.id ORDER BY m.name",
+                (creator_id,creator_id,creator_id,creator_id),
+            ).fetchall()
+        result=[]
+        for row in rows:
+            value=dict(row); executions=int(value["executions"]); successes=int(value["successes"]); value["success_rate"]=round((successes/executions*100) if executions else 100.0,2); value["rating"]=round(float(value["rating"]),2); result.append(value)
+        return result
+
+    def upsert_quality_score(self, value: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT INTO quality_scores(package_id,version,security_score,compatibility_score,reliability_score,user_rating,score,grade,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(package_id,version) DO UPDATE SET security_score=excluded.security_score,compatibility_score=excluded.compatibility_score,reliability_score=excluded.reliability_score,user_rating=excluded.user_rating,score=excluded.score,grade=excluded.grade,updated_at=excluded.updated_at", (value["package_id"],value["version"],value["security_score"],value["compatibility_score"],value["reliability_score"],value["user_rating"],value["score"],value["grade"],value["updated_at"]))
+        self._secure_database()
+
+    def get_quality_score(self, package_id: str, version: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row=connection.execute("SELECT * FROM quality_scores WHERE package_id=? AND version=?",(package_id,version)).fetchone()
+        return None if row is None else dict(row)
+
+    def add_review_vote(self, review_id: str, user_id: int, vote: int) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT INTO review_votes(review_id,user_id,vote,created_at) VALUES(?,?,?,?) ON CONFLICT(review_id,user_id) DO UPDATE SET vote=excluded.vote,created_at=excluded.created_at",(review_id,user_id,int(vote),utc_now()))
+        self._secure_database()
+
+    def review_for_vote(self, review_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row=connection.execute("SELECT r.id,r.item_id,r.package_id,r.workspace_id,r.user_id,p.version,(SELECT COALESCE(SUM(v.vote),0) FROM review_votes v WHERE v.review_id=r.id) helpful FROM reviews r JOIN packages p ON p.id=r.package_id WHERE r.id=?",(review_id,)).fetchone()
+        return None if row is None else dict(row)
