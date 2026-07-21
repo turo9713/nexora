@@ -20,13 +20,18 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - name: Prepare release-compatible workspace path
+        run: |
+          sudo mkdir -p /workspace
+          sudo ln -s "${GITHUB_WORKSPACE}" /workspace/nexora
       - name: Verify source and dependencies
         env:
-          PYTHONPATH: ${{ github.workspace }}/..
+          PYTHONPATH: /workspace
         run: |
           test "$(cat VERSION)" = "${GITHUB_REF_NAME#v}"
           python -m pip install --requirement runtime/requirements.txt pip-audit
-          python -m pytest -q
+          python -m pytest -q tests integrations/telegram_runtime/tests
+          python examples/demo_content_workflow.py
           python -m pip_audit --requirement requirements-release.txt
           bash scripts/secret-scan.sh
           python scripts/check-release-permissions.py
