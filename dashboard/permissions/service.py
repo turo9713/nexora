@@ -39,6 +39,8 @@ class DashboardPermissions:
         "marketplace:manage",
         "creator:read",
         "creator:manage",
+        "agent_ecosystem:read",
+        "agent_ecosystem:manage",
     }
 
     def authorize(self, session: Session | None, permission: str) -> bool:

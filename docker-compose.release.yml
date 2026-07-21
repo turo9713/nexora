@@ -4,7 +4,7 @@ x-hardened: &hardened
   build:
     context: .
     dockerfile: Dockerfile.release
-  image: nexora:${NEXORA_VERSION:-2.0.0}
+  image: nexora:${NEXORA_VERSION:-3.0.0}
   user: "10001:10001"
   read_only: true
   init: true
@@ -72,6 +72,7 @@ services:
       - dashboard_tls_cert
       - dashboard_tls_key
       - api_webhook_master
+      - agent_memory_key
     healthcheck:
       test: ["CMD", "python", "-m", "nexora.dashboard", "--healthcheck"]
       interval: 10s
@@ -93,6 +94,7 @@ services:
       - nexora-state:/workspace/nexora/runtime/state
     secrets:
       - api_webhook_master
+      - agent_memory_key
       - source: dashboard_tls_cert
         target: api_tls_cert
       - source: dashboard_tls_key
@@ -128,3 +130,5 @@ secrets:
     file: .secrets/dashboard_tls_key
   api_webhook_master:
     file: .secrets/api_webhook_master
+  agent_memory_key:
+    file: .secrets/agent_memory_key

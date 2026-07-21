@@ -31,6 +31,7 @@ def config(tmp_path: Path) -> PublicAPIConfig:
         state_root=tmp_path / "state" / "telegram_v14",
         database_path=tmp_path / "state" / "database" / "nexora.sqlite3",
         webhook_master_file=master,
+        agent_memory_key_file=master,
         tls_cert_file=None,
         tls_key_file=None,
     )

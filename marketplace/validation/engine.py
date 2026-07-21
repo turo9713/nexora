@@ -17,7 +17,8 @@ FORBIDDEN_KEYS = {
 }
 FORBIDDEN_TRUE = {"shell", "root", "secret_access", "docker_access", "production_access", "privileged"}
 REQUIRED = {"id", "name", "type", "version", "author", "description", "permissions", "risk_level", "requirements", "compatibility", "security"}
-ALLOWED_TOP = REQUIRED | {"category"}
+ALLOWED_TOP = REQUIRED | {"category", "package_kind"}
+AGENT_PACKAGE_KINDS = {"SINGLE_AGENT", "AGENT_TEAM", "AI_DEPARTMENT"}
 
 
 class PackageValidationError(ValueError):
@@ -54,6 +55,11 @@ class PackageValidator:
         risk = str(value["risk_level"]).upper()
         if item_type not in ALLOWED_TYPES or risk not in ALLOWED_RISKS:
             raise PackageValidationError("MARKETPLACE_TYPE_OR_RISK_INVALID")
+        package_kind = str(value.get("package_kind", "SINGLE_AGENT" if item_type == "AGENT" else "EXTENSION")).upper()
+        if item_type == "AGENT" and package_kind not in AGENT_PACKAGE_KINDS:
+            raise PackageValidationError("MARKETPLACE_AGENT_PACKAGE_KIND_INVALID")
+        if item_type != "AGENT" and "package_kind" in value:
+            raise PackageValidationError("MARKETPLACE_AGENT_PACKAGE_KIND_INVALID")
         security = value.get("security")
         if not isinstance(security, dict) or security.get("sandbox") is not True:
             raise PackageValidationError("MARKETPLACE_SANDBOX_REQUIRED")
@@ -81,6 +87,8 @@ class PackageValidator:
             raise PackageValidationError("MARKETPLACE_COMPATIBILITY_INVALID")
         normalized = dict(value)
         normalized.update(type=item_type, risk_level=risk)
+        if item_type == "AGENT":
+            normalized["package_kind"] = package_kind
         canonical = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         checksum = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         signature_status = "UNSIGNED"

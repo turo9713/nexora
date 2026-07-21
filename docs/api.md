@@ -74,3 +74,14 @@ Keys use the `nx_live_` prefix, are displayed once, and are stored as hashes.
 Requests receive a request ID and correlation ID, owner and scope checks, per
 key/owner/endpoint rate limits, sanitized audit, and bounded response bodies.
 Webhook destinations must be public HTTPS endpoints and deliveries are signed.
+# Agent Ecosystem v3
+
+Authenticated clients may use `GET|POST /api/v1/agent-definitions`,
+`GET|POST /api/v1/agent-teams`, `GET|POST /api/v1/agent-plans`,
+`GET /api/v1/agent-memory`, `GET /api/v1/agent-evaluations`, and
+`GET /api/v1/sdk`. Reads require `agent_ecosystem:read`; mutations require
+`agent_ecosystem:manage`. Every request requires `workspace_id`; mutation
+requests also require an exact one-time `approval_id` where applicable.
+
+The API exposes no shell, arbitrary package execution, raw memory owner,
+Gateway transport, token, or secret value.

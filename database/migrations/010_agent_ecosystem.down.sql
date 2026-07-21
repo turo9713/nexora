@@ -1,0 +1,13 @@
+DROP TRIGGER IF EXISTS agent_evaluations_immutable_delete;
+DROP TRIGGER IF EXISTS agent_evaluations_immutable_update;
+DROP TRIGGER IF EXISTS agent_versions_immutable_delete;
+DROP TRIGGER IF EXISTS agent_versions_immutable_update;
+DROP TABLE IF EXISTS sdk_apps;
+DROP TABLE IF EXISTS agent_evaluations;
+DROP TABLE IF EXISTS agent_plans;
+DROP TABLE IF EXISTS agent_memory;
+DROP TABLE IF EXISTS team_members;
+DROP TABLE IF EXISTS agent_teams;
+DROP TABLE IF EXISTS agent_versions;
+DROP TABLE IF EXISTS agents;
+DELETE FROM schema_migrations WHERE version=10;

@@ -49,6 +49,7 @@ def main() -> int:
     atomic_secret("dashboard_session_key", secrets.token_hex(32))
     atomic_secret("dashboard_owner_namespace", secrets.token_hex(32))
     atomic_secret("api_webhook_master", secrets.token_hex(32))
+    atomic_secret("agent_memory_key", secrets.token_hex(32))
 
     if os.environ.get("NEXORA_SUPPRESS_SECRET_OUTPUT") != "1":
         print("Dashboard password (shown once): " + password)

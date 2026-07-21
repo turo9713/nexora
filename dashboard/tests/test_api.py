@@ -60,6 +60,21 @@ def test_templates_playground_and_approval_reuse_existing_engine(dashboard_facto
     assert playground["mode"] == "SANDBOX_ONLY" and playground["production_tools"] is False
 
 
+def test_agent_builder_dashboard_uses_one_time_approval(dashboard_factory) -> None:
+    app, _ = dashboard_factory()
+    workspace = app.api.list_workspaces({})["items"][0]
+    manifest = {"id":"dashboard-writer","name":"Dashboard Writer","version":"1.0.0","description":"Safe dashboard-created agent","goal":"Create reviewed drafts","role":"content","skills":["content-writer"],"knowledge":["workspace-style"],"tools":["text_generation"],"permissions":["drafts:write"],"memory_scope":"AGENT","approval_rules":["publish"]}
+    value = {"workspace_id": workspace["id"], "manifest": manifest}
+    pending = app.api.create_custom_agent(value, "dashboard-agent-session")
+    assert pending["status"] == "WAITING_APPROVAL"
+    assert app.api.decide_approval(pending["approval_id"], "approve")["status"] == "APPROVED"
+    created = app.api.create_custom_agent({**value, "approval_id": pending["approval_id"]}, "dashboard-agent-session")
+    assert created["id"] == "dashboard-writer"
+    with pytest.raises(PermissionError):
+        app.api.create_custom_agent({**value, "manifest": {**manifest, "id":"dashboard-replay"}, "approval_id":pending["approval_id"]}, "dashboard-agent-session")
+    assert app.api.health()["agent_ecosystem"] == "OK"
+
+
 def test_team_dashboard_is_owner_scoped(dashboard_factory) -> None:
     app, _ = dashboard_factory()
     organizations = app.api.list_organizations()["items"]

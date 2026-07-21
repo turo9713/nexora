@@ -24,7 +24,7 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
@@ -39,9 +39,39 @@ class APIGateway:
         self.approvals = approvals
         self.webhooks = webhooks
         self.metrics = metrics
+        self.ecosystem = ecosystem
 
     def health(self) -> dict[str, str]:
         return {"status": "ok" if self.database.check() and self.skills.health()["ok"] and self.templates.health()["ok"] else "degraded", "version": "v1"}
+
+    def ecosystem_list(self, principal: APIKeyPrincipal, resource: str, query: dict[str, str]) -> dict[str, Any]:
+        if self.ecosystem is None:
+            raise APIGatewayError(503, "AGENT_ECOSYSTEM_UNAVAILABLE", "Agent ecosystem unavailable")
+        workspace_id = str(query.get("workspace_id") or "")
+        if not workspace_id:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "workspace_id is required")
+        try:
+            if resource == "agents": values = self.ecosystem.builder.list(principal.owner, workspace_id)
+            elif resource == "teams": values = self.ecosystem.teams.list(principal.owner, workspace_id)
+            elif resource == "plans": values = self.ecosystem.planning.list(principal.owner, workspace_id)
+            elif resource == "memory": values = self.ecosystem.memory.list(principal.owner, workspace_id, scope=str(query.get("scope") or "PERSONAL"), agent_id=query.get("agent_id"))
+            elif resource == "evaluations": values = self.ecosystem.evaluation.list(principal.owner, workspace_id, query.get("agent_id"))
+            else: raise APIGatewayError(404, "NOT_FOUND", "Resource unavailable")
+            return {"items": values}
+        except PermissionError as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+
+    def ecosystem_create(self, principal: APIKeyPrincipal, resource: str, value: dict[str, Any]) -> dict[str, Any]:
+        if self.ecosystem is None:
+            raise APIGatewayError(503, "AGENT_ECOSYSTEM_UNAVAILABLE", "Agent ecosystem unavailable")
+        workspace_id = str(value.get("workspace_id") or "")
+        try:
+            if resource == "agents": return self.ecosystem.builder.create(principal.owner, workspace_id, value.get("manifest") if isinstance(value.get("manifest"), dict) else {}, approval_id=str(value.get("approval_id") or ""))
+            if resource == "teams": return self.ecosystem.teams.create(principal.owner, workspace_id, str(value.get("name") or ""), str(value.get("leader_agent_id") or ""), value.get("workflow") if isinstance(value.get("workflow"), list) else [], approval_id=str(value.get("approval_id") or ""))
+            if resource == "plans": return self.ecosystem.planning.create(principal.owner, workspace_id, str(value.get("goal") or ""))
+        except PermissionError as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        raise APIGatewayError(404, "NOT_FOUND", "Resource unavailable")
 
     def create_task(self, principal: APIKeyPrincipal, value: dict[str, Any], request_id: str) -> dict[str, Any]:
         try:
