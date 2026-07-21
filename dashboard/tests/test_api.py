@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from nexora.dashboard.api import DashboardAPIError
+from nexora.billing import BillingAccessDenied
 
 from .conftest import NAMESPACE
 
@@ -70,6 +71,33 @@ def test_team_dashboard_is_owner_scoped(dashboard_factory) -> None:
     assert app.api.list_knowledge({"workspace_id": workspaces[0]["id"]})["items"] == []
     health = app.api.health()
     assert health["tenancy"] == {"organizations": 1, "workspaces": 1}
+    assert health["billing"] == "OK"
+
+
+def test_billing_dashboard_admin_changes_are_approved_and_tenant_safe(dashboard_factory) -> None:
+    app, _ = dashboard_factory()
+    organization = app.api.list_organizations()["items"][0]
+    plans = app.api.list_plans()["items"]
+    assert [item["id"] for item in plans] == ["free", "pro", "team", "enterprise"]
+    summary = app.api.billing_summary({"organization_id": organization["id"]})
+    assert summary["subscription"]["plan_id"] == "free"
+    assert summary["limits"]["limits"]["tasks_monthly"] == 100
+    request = app.api.request_plan_change(organization["id"], "pro", "billing-session")
+    assert request["status"] == "WAITING_APPROVAL"
+    approved = app.api.decide_approval(request["approval_id"], "approve")
+    assert approved["execution"] == "COMPLETED"
+    assert app.api.billing_summary({"organization_id": organization["id"]})["subscription"]["plan_id"] == "pro"
+    with pytest.raises(DashboardAPIError) as replay:
+        app.api.decide_approval(request["approval_id"], "approve")
+    assert replay.value.code == "APPROVAL_UNAVAILABLE"
+    admin = app.api.admin_summary()
+    assert admin["organizations"][0]["plan_id"] == "pro"
+    assert admin["system_health"] == {"database": "OK", "billing": "OK"}
+    assert isinstance(admin["security_events"], list)
+    with pytest.raises(BillingAccessDenied):
+        app.api.billing.usage("f" * 32, organization["id"])
+    serialized = json.dumps(app.api.admin_summary()).casefold()
+    assert "payment" not in serialized and "card" not in serialized
 
 
 def test_agent_change_requires_existing_approval_engine(dashboard_factory) -> None:

@@ -121,6 +121,10 @@ class TeamService:
         self._require(actor, workspace_id, "tasks:read")
         return self.database.list_workspace_components(workspace_id, component_type)
 
+    def workspace_context(self, actor: str, workspace_id: str, permission: str = "tasks:read") -> dict[str, Any]:
+        membership = self._require(actor, workspace_id, permission)
+        return {key: membership[key] for key in ("organization_id", "user_id", "role")}
+
     def add_knowledge(self, actor: str, workspace_id: str, value: dict[str, Any]) -> dict[str, Any]:
         membership = self._require(actor, workspace_id, "knowledge:write")
         try:

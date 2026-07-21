@@ -1,0 +1,18 @@
+PRAGMA foreign_keys = OFF;
+DROP INDEX IF EXISTS idx_cloud_org_status;
+DROP INDEX IF EXISTS idx_billing_org_time;
+DROP INDEX IF EXISTS idx_usage_workspace_time;
+DROP INDEX IF EXISTS idx_usage_org_metric_time;
+DROP INDEX IF EXISTS idx_subscriptions_org_status;
+DROP TRIGGER IF EXISTS billing_events_immutable_delete;
+DROP TRIGGER IF EXISTS billing_events_immutable_update;
+DROP TRIGGER IF EXISTS usage_events_immutable_delete;
+DROP TRIGGER IF EXISTS usage_events_immutable_update;
+DROP TABLE IF EXISTS cloud_resources;
+DROP TABLE IF EXISTS billing_events;
+DROP TABLE IF EXISTS limits;
+DROP TABLE IF EXISTS usage_events;
+DROP TABLE IF EXISTS subscriptions;
+DROP TABLE IF EXISTS plans;
+DELETE FROM schema_migrations WHERE version = 7;
+PRAGMA foreign_keys = ON;

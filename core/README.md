@@ -10,6 +10,10 @@ layout to avoid duplicate modules or import conflicts:
 - `dashboard/`: authenticated control panel.
 - `security/`: policies, redaction, and audit controls.
 - `database/`: SQLite models, repository, and reversible migrations.
+- `plans/`, `subscriptions/`, `usage/`, `limits/`, and `billing/`: local
+  SaaS foundations with no payment-provider implementation.
+- `admin/` and `cloud/`: approval-gated administration and metadata-only tenant
+  provisioning.
 
 This directory documents the boundary; it does not copy or wrap those packages.
 Production configuration and proprietary extensions are not part of Core.

@@ -90,7 +90,7 @@ def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path
     server = create_server(config(tmp_path), use_tls=False)
     app = server.RequestHandlerClass.app
     organization = app.gateway.teams.create_organization(OWNER, "API Test Organization")
-    _, full_key = issue(app, ["tasks:create", "tasks:read", "agents:read", "skills:read", "templates:read", "templates:install", "playground:read", "webhooks:manage", "organizations:read", "workspaces:read", "workspaces:write", "members:read", "knowledge:read", "knowledge:write"], "full")
+    _, full_key = issue(app, ["tasks:create", "tasks:read", "agents:read", "skills:read", "templates:read", "templates:install", "playground:read", "webhooks:manage", "organizations:read", "workspaces:read", "workspaces:write", "members:read", "knowledge:read", "knowledge:write", "plans:read", "billing:read", "usage:read", "limits:read"], "full")
     _, read_key = issue(app, ["tasks:read"], "read-only")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -149,6 +149,22 @@ def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path
         assert response.status == 201 and document["workspace_id"] == workspace["id"]
         response, data = request(connection, "GET", f"/api/v1/knowledge?workspace_id={workspace['id']}", key=full_key)
         assert response.status == 200 and data["items"][0]["name"] == "API Guide"
+        response, data = request(connection, "GET", "/api/v1/plans", key=full_key)
+        assert response.status == 200 and [item["id"] for item in data["items"]] == ["free", "pro", "team", "enterprise"]
+        response, data = request(connection, "GET", f"/api/v1/subscription?organization_id={organization['id']}", key=full_key)
+        assert response.status == 200 and data["plan_id"] == "free"
+        response, data = request(connection, "POST", "/api/v1/subscription", key=full_key, body={"plan_id": "enterprise"})
+        assert response.status == 404 and data["error"] == "NOT_FOUND"
+        response, data = request(connection, "GET", f"/api/v1/usage?organization_id={organization['id']}", key=full_key)
+        assert response.status == 200 and data["events"]["documents"] == 1
+        response, data = request(connection, "POST", "/api/v1/usage", key=full_key, body={"metric": "tasks_created", "value": -1000})
+        assert response.status == 404 and data["error"] == "NOT_FOUND"
+        response, data = request(connection, "GET", f"/api/v1/limits?organization_id={organization['id']}", key=full_key)
+        assert response.status == 200 and data["limits"]["workspace_limit"] == 1
+        response, data = request(connection, "GET", f"/api/v1/usage?organization_id={foreign_org['id']}", key=full_key)
+        assert response.status == 404 and data["error"] == "ORGANIZATION_NOT_FOUND"
+        response, data = request(connection, "GET", "/api/v1/plans", key=read_key)
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
         response, data = request(connection, "POST", "/api/v1/webhooks", key=full_key, body={"url": "https://example.com/nexora", "events": ["TASK_COMPLETED"]})
         assert response.status == 202 and data["status"] == "WAITING_APPROVAL"
         assert "secret" not in json.dumps(data).casefold()
@@ -170,4 +186,4 @@ def test_public_api_has_no_gateway_transport_or_secret_config(tmp_path: Path) ->
     assert "openclaw_provider" not in source and "openclaw_transport" not in source
     specification = yaml.safe_load((PROJECT / "api" / "schemas" / "openapi-v1.yaml").read_text(encoding="utf-8"))
     assert specification["openapi"] == "3.1.0" and "/tasks" in specification["paths"] and "/templates" in specification["paths"]
-    assert {"/organizations", "/workspaces", "/members", "/invite", "/knowledge"}.issubset(specification["paths"])
+    assert {"/organizations", "/workspaces", "/members", "/invite", "/knowledge", "/plans", "/subscription", "/usage", "/limits"}.issubset(specification["paths"])

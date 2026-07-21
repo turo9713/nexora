@@ -15,6 +15,7 @@ from nexora.api.gateway.service import APIGateway, APIGatewayError
 from nexora.api.middleware import request_context
 from nexora.api.rate_limit import APIRateLimiter
 from nexora.collaboration import TeamService
+from nexora.billing import BillingFoundation
 from nexora.database import SQLiteRepository
 from nexora.integrations.telegram_runtime.services.approval_service import ApprovalService
 from nexora.integrations.telegram_runtime.services.audit_service import AuditService
@@ -47,6 +48,10 @@ ROUTES = {
     ("POST", "/api/v1/invite"): ("members:invite", 10),
     ("GET", "/api/v1/knowledge"): ("knowledge:read", 60),
     ("POST", "/api/v1/knowledge"): ("knowledge:write", 10),
+    ("GET", "/api/v1/plans"): ("plans:read", 60),
+    ("GET", "/api/v1/subscription"): ("billing:read", 60),
+    ("GET", "/api/v1/usage"): ("usage:read", 60),
+    ("GET", "/api/v1/limits"): ("limits:read", 60),
     ("POST", "/api/v1/webhooks"): ("webhooks:manage", 10),
     ("GET", "/api/v1/webhooks"): ("webhooks:manage", 30),
 }
@@ -93,7 +98,7 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
         database=database,
         audit=audit,
         agent_registry=agents,
-        platform_version="2.2.0",
+        platform_version="2.3.0",
     ).load()
     events = EventBus([SQLiteEventSink(database)])
     tasks = TaskService(TaskRepository(config.state_root / "tasks"), database=database, event_bus=events)
@@ -103,7 +108,8 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
     templates = TemplateRegistry(config.project_root / "templates", database=database, agents=agents, skills=skills, policy=policy, audit=audit, metrics=metrics).load()
     playground = PlaygroundService(audit)
     teams = TeamService(database, policy, audit)
-    gateway = APIGateway(database, agents, skills, templates, playground, teams, policy, tasks, approvals, webhooks, metrics)
+    billing = BillingFoundation(database, audit)
+    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, policy, tasks, approvals, webhooks, metrics)
     return PublicAPIApplication(gateway, APIKeyService(database), APIRateLimiter(), audit, metrics)
 
 
@@ -127,7 +133,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/2.2"
+    server_version = "NexoraAPI/2.3"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -224,6 +230,18 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             elif method == "POST" and path == "/api/v1/knowledge":
                 response = self.app.gateway.add_knowledge(principal, self._body())
                 status = 201
+            elif method == "GET" and path == "/api/v1/plans":
+                response = self.app.gateway.list_plans()
+                status = 200
+            elif method == "GET" and path == "/api/v1/subscription":
+                response = self.app.gateway.get_subscription(principal, query)
+                status = 200
+            elif method == "GET" and path == "/api/v1/usage":
+                response = self.app.gateway.get_usage(principal, query)
+                status = 200
+            elif method == "GET" and path == "/api/v1/limits":
+                response = self.app.gateway.get_limits(principal, query)
+                status = 200
             elif method == "POST" and path == "/api/v1/webhooks":
                 response = self.app.gateway.request_webhook(principal, self._body(), context.request_id)
                 status = 202

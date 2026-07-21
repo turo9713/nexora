@@ -15,6 +15,8 @@ from nexora.security.policies import PolicyEngine
 from nexora.skills import SkillRegistry, SkillRegistryError
 from nexora.api.auth import APIKeyService
 from nexora.collaboration import TeamAccessDenied, TeamService
+from nexora.billing import BillingAccessDenied, BillingFoundation
+from nexora.admin import AdminConsole
 from nexora.metrics import MetricsService
 from nexora.playground import PlaygroundService
 from nexora.templates import TemplateApprovalRequired, TemplateRegistry, TemplateRegistryError
@@ -55,6 +57,8 @@ class DashboardAPI:
         templates: TemplateRegistry | None = None,
         playground: PlaygroundService | None = None,
         teams: TeamService | None = None,
+        billing: BillingFoundation | None = None,
+        admin_console: AdminConsole | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -71,6 +75,8 @@ class DashboardAPI:
         self.templates = templates
         self.playground = playground
         self.teams = teams
+        self.billing = billing
+        self.admin_console = admin_console
 
     def health(self) -> dict[str, Any]:
         status = self._safe_status()
@@ -86,6 +92,7 @@ class DashboardAPI:
                 "organizations": len(self.teams.list_organizations(self.namespace)) if self.teams else 0,
                 "workspaces": len(self.teams.list_workspaces(self.namespace)) if self.teams else 0,
             },
+            "billing": "OK" if self.billing is not None else "WARNING",
             "api": self._health_value(status.get("api")),
             "gateway": self._health_value(status.get("openclaw")),
             "tasks": self.database.task_overview(self.namespace),
@@ -219,6 +226,56 @@ class DashboardAPI:
             return {"items": self.teams.list_knowledge(self.namespace, str(query.get("workspace_id") or ""))}
         except TeamAccessDenied as exc:
             raise DashboardAPIError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+
+    def list_plans(self) -> dict[str, Any]:
+        if self.billing is None:
+            raise DashboardAPIError(503, "BILLING_UNAVAILABLE", "Billing foundation unavailable")
+        return {"items": self.billing.list_plans()}
+
+    def billing_summary(self, query: dict[str, str]) -> dict[str, Any]:
+        organization_id = self._tenant_organization(query)
+        assert self.billing is not None
+        try:
+            return {"subscription": self.billing.subscription(self.namespace, organization_id), "limits": self.billing.limits(self.namespace, organization_id), "usage": self.billing.usage(self.namespace, organization_id)}
+        except BillingAccessDenied as exc:
+            raise DashboardAPIError(404, "ORGANIZATION_NOT_FOUND", "Organization not found or unavailable") from exc
+
+    def usage_summary_v23(self, query: dict[str, str]) -> dict[str, Any]:
+        organization_id = self._tenant_organization(query)
+        assert self.billing is not None
+        return self.billing.usage(self.namespace, organization_id)
+
+    def limits_summary(self, query: dict[str, str]) -> dict[str, Any]:
+        organization_id = self._tenant_organization(query)
+        assert self.billing is not None
+        return self.billing.limits(self.namespace, organization_id)
+
+    def admin_summary(self) -> dict[str, Any]:
+        if self.admin_console is None:
+            raise DashboardAPIError(503, "ADMIN_UNAVAILABLE", "Admin console unavailable")
+        try:
+            return self.admin_console.summary(self.namespace)
+        except BillingAccessDenied as exc:
+            raise DashboardAPIError(403, "ACCESS_DENIED", "Admin access denied") from exc
+
+    def request_plan_change(self, organization_id: str, plan_id: str, session_id: str) -> dict[str, Any]:
+        if self.admin_console is None or self.billing is None:
+            raise DashboardAPIError(503, "ADMIN_UNAVAILABLE", "Admin console unavailable")
+        if self.database.get_organization(organization_id) is None:
+            raise DashboardAPIError(404, "ORGANIZATION_NOT_FOUND", "Organization not found")
+        try:
+            self.billing.plans.require(plan_id)
+        except ValueError as exc:
+            raise DashboardAPIError(404, "PLAN_NOT_FOUND", "Plan not found") from exc
+        approval = self._management_approval(session_id, f"billing:plan_change:{organization_id}:{plan_id}", f"Change organization plan to {plan_id}", "Plan changes affect tenant limits. No payment is executed.")
+        return {"status": "WAITING_APPROVAL", "organization_id": organization_id, "plan_id": plan_id, **approval}
+
+    def request_organization_block(self, organization_id: str, blocked: bool, session_id: str) -> dict[str, Any]:
+        if self.admin_console is None or self.database.get_organization(organization_id) is None:
+            raise DashboardAPIError(404, "ORGANIZATION_NOT_FOUND", "Organization not found")
+        action = "block" if blocked else "unblock"
+        approval = self._management_approval(session_id, f"billing:organization_{action}:{organization_id}", f"{action.title()} organization", "Organization access will change after approval.")
+        return {"status": "WAITING_APPROVAL", "organization_id": organization_id, "action": action, **approval}
 
     def request_agent_action(self, agent_id: str, action: str, dashboard_session_id: str) -> dict[str, Any]:
         manifest = self.registry.get(agent_id)
@@ -457,6 +514,9 @@ class DashboardAPI:
         elif action_type.startswith("webhook:"):
             one_time_secret = self._execute_webhook_action(action_type, task_id, approval_id)
             execution = "COMPLETED"
+        elif action_type.startswith("billing:"):
+            self._execute_billing_action(action_type, task_id, approval_id)
+            execution = "COMPLETED"
         else:
             execution = "TELEGRAM_RUNTIME_PENDING"
         self.audit.record("APPROVAL_DECISION", source="dashboard_api", action_result="APPROVED", approval_id=approval_id, task_id=task_id)
@@ -598,6 +658,35 @@ class DashboardAPI:
         self._complete_management_task(task_id, f"Webhook action {action} completed")
         self.audit.record("WEBHOOK_CHANGED", source="dashboard_api", action_result=action.upper(), webhook_id=webhook_id, task_id=task_id)
         return secret
+
+    def _execute_billing_action(self, action_type: str, task_id: str, approval_id: str) -> None:
+        if self.admin_console is None:
+            raise DashboardAPIError(503, "ADMIN_UNAVAILABLE", "Admin console unavailable")
+        parts = action_type.split(":")
+        try:
+            if len(parts) == 4 and parts[1] == "plan_change":
+                self.admin_console.change_plan(self.namespace, parts[2], parts[3], approval_id)
+                summary = f"Plan changed to {parts[3]} for {parts[2]}"
+            elif len(parts) == 3 and parts[1] in {"organization_block", "organization_unblock"}:
+                self.admin_console.block(self.namespace, parts[2], parts[1] == "organization_block", approval_id)
+                summary = f"Organization access updated for {parts[2]}"
+            else:
+                raise DashboardAPIError(409, "ACTION_INVALID", "Billing action invalid")
+        except BillingAccessDenied as exc:
+            raise DashboardAPIError(403, "BILLING_ACTION_DENIED", "Billing action denied") from exc
+        self._complete_management_task(task_id, summary)
+
+    def _tenant_organization(self, query: dict[str, str]) -> str:
+        if self.billing is None or self.teams is None:
+            raise DashboardAPIError(503, "BILLING_UNAVAILABLE", "Billing foundation unavailable")
+        requested = str(query.get("organization_id") or "")
+        organizations = self.teams.list_organizations(self.namespace)
+        if not organizations:
+            raise DashboardAPIError(404, "ORGANIZATION_NOT_FOUND", "Organization not found")
+        organization_id = requested or str(organizations[0]["id"])
+        if organization_id not in {str(item["id"]) for item in organizations}:
+            raise DashboardAPIError(404, "ORGANIZATION_NOT_FOUND", "Organization not found or unavailable")
+        return organization_id
 
     def _management_approval(self, session_id: str, action_type: str, summary: str, risk: str) -> dict[str, str]:
         policy = self.policy.evaluate("orchestrator", risk="HIGH", action_type="configuration_changes", approval_granted=False)

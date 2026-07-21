@@ -5,6 +5,7 @@ from typing import Any
 from nexora.api.auth import APIKeyPrincipal
 from nexora.api.schemas import APIValidationError, validate_invite, validate_knowledge, validate_task_create, validate_webhook_create, validate_workspace_create
 from nexora.collaboration import TeamAccessDenied, TeamValidationError
+from nexora.billing import BillingAccessDenied, BillingLimitReached
 from nexora.security.audit.redaction import redact_text
 from nexora.skills import SkillRegistryError
 from nexora.templates import TemplateApprovalRequired, TemplateRegistryError
@@ -21,13 +22,14 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
         self.templates = templates
         self.playground = playground
         self.teams = teams
+        self.billing = billing
         self.policy = policy
         self.tasks = tasks
         self.approvals = approvals
@@ -54,13 +56,20 @@ class APIGateway:
         if payload.get("workspace_id"):
             try:
                 self.teams.authorize_task(principal.owner, payload["workspace_id"], payload["agent"], payload["skill"])
+                context = self.teams.workspace_context(principal.owner, payload["workspace_id"], "tasks:create")
+                self.billing.check(principal.owner, context["organization_id"], "tasks_monthly", 1)
             except TeamAccessDenied as exc:
                 raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+            except BillingLimitReached as exc:
+                raise APIGatewayError(429, "LIMIT_REACHED", f"Organization limit reached: {exc.metric}") from exc
+            except BillingAccessDenied as exc:
+                raise APIGatewayError(403, "SUBSCRIPTION_UNAVAILABLE", "Subscription unavailable") from exc
         task = self.tasks.create(principal.owner, payload["title"], f"api-{request_id[:24]}")
         task = self.tasks.update_fields(principal.owner, task["task_id"], assigned_agent=payload["agent"].title())
         task = self.tasks.transition(principal.owner, task["task_id"], "QUEUED", stage="Ожидание обработки API", progress=25, event="API_QUEUED")
         if payload.get("workspace_id"):
             self.teams.link_task(principal.owner, payload["workspace_id"], task["task_id"])
+            self.billing.record_runtime_usage(context["organization_id"], payload["workspace_id"], "tasks_created", 1, source="task_runtime")
         self.metrics.task_created(principal.owner, payload["agent"], payload["skill"])
         return {"task_id": task["task_id"], "status": task["status"]}
 
@@ -91,11 +100,16 @@ class APIGateway:
     def create_workspace(self, principal: APIKeyPrincipal, value: dict[str, Any]) -> dict[str, Any]:
         try:
             payload = validate_workspace_create(value)
+            self.billing.check(principal.owner, payload["organization_id"], "workspace_limit", 1)
             return self.teams.create_workspace(principal.owner, payload["organization_id"], payload["name"], payload["description"])
         except APIValidationError as exc:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid workspace request") from exc
         except TeamAccessDenied as exc:
             raise APIGatewayError(404, "ORGANIZATION_NOT_FOUND", "Organization not found or unavailable") from exc
+        except BillingLimitReached as exc:
+            raise APIGatewayError(429, "LIMIT_REACHED", f"Organization limit reached: {exc.metric}") from exc
+        except BillingAccessDenied as exc:
+            raise APIGatewayError(403, "SUBSCRIPTION_UNAVAILABLE", "Subscription unavailable") from exc
 
     def list_members(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
         try:
@@ -106,11 +120,17 @@ class APIGateway:
     def invite_member(self, principal: APIKeyPrincipal, value: dict[str, Any]) -> dict[str, Any]:
         try:
             payload = validate_invite(value)
+            context = self.teams.workspace_context(principal.owner, payload["workspace_id"], "members:manage")
+            self.billing.check(principal.owner, context["organization_id"], "members_limit", 1)
             return self.teams.invite(principal.owner, payload["workspace_id"], payload["email_hash"], payload["display_name"], payload["role"], approval_id=payload["approval_id"])
         except APIValidationError as exc:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid invite request") from exc
         except (TeamAccessDenied, TeamValidationError) as exc:
             raise APIGatewayError(403, "ACCESS_DENIED", "Invite denied") from exc
+        except BillingLimitReached as exc:
+            raise APIGatewayError(429, "LIMIT_REACHED", f"Organization limit reached: {exc.metric}") from exc
+        except BillingAccessDenied as exc:
+            raise APIGatewayError(403, "SUBSCRIPTION_UNAVAILABLE", "Subscription unavailable") from exc
 
     def list_knowledge(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
         try:
@@ -121,13 +141,44 @@ class APIGateway:
     def add_knowledge(self, principal: APIKeyPrincipal, value: dict[str, Any]) -> dict[str, Any]:
         try:
             payload = validate_knowledge(value)
-            return self.teams.add_knowledge(principal.owner, payload["workspace_id"], payload)
+            context = self.teams.workspace_context(principal.owner, payload["workspace_id"], "knowledge:write")
+            size = len(payload["content"].encode("utf-8"))
+            self.billing.check(principal.owner, context["organization_id"], "storage_bytes", size)
+            result = self.teams.add_knowledge(principal.owner, payload["workspace_id"], payload)
+            self.billing.record_runtime_usage(context["organization_id"], payload["workspace_id"], "documents", 1, source="knowledge_service")
+            self.billing.record_runtime_usage(context["organization_id"], payload["workspace_id"], "knowledge_size_bytes", size, source="knowledge_service")
+            return result
         except APIValidationError as exc:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid knowledge request") from exc
         except TeamAccessDenied as exc:
             raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
         except TeamValidationError as exc:
             raise APIGatewayError(400, "KNOWLEDGE_VALIDATION_FAILED", "Knowledge document rejected") from exc
+        except BillingLimitReached as exc:
+            raise APIGatewayError(429, "LIMIT_REACHED", f"Organization limit reached: {exc.metric}") from exc
+        except BillingAccessDenied as exc:
+            raise APIGatewayError(403, "SUBSCRIPTION_UNAVAILABLE", "Subscription unavailable") from exc
+
+    def list_plans(self) -> dict[str, Any]:
+        return {"items": self.billing.list_plans()}
+
+    def get_subscription(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        return self._billing_read(principal, query, "subscription")
+
+    def get_usage(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        return self._billing_read(principal, query, "usage")
+
+    def get_limits(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        return self._billing_read(principal, query, "limits")
+
+    def _billing_read(self, principal: APIKeyPrincipal, query: dict[str, str], kind: str) -> dict[str, Any]:
+        organization_id = str(query.get("organization_id") or "")
+        if not organization_id:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "organization_id is required")
+        try:
+            return getattr(self.billing, kind)(principal.owner, organization_id)
+        except BillingAccessDenied as exc:
+            raise APIGatewayError(404, "ORGANIZATION_NOT_FOUND", "Organization not found or unavailable") from exc
 
     def list_agents(self, principal: APIKeyPrincipal | None = None, query: dict[str, str] | None = None) -> dict[str, Any]:
         workspace_id = (query or {}).get("workspace_id")

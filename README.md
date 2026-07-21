@@ -3,8 +3,9 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 2.2 adds organizations, role-based team workspaces, shared knowledge,
-team tasks, and workspace-scoped activity. The repository contains the open-source
+Nexora 2.3 adds SaaS-ready plans, subscriptions, usage metering, enforceable
+tenant limits, an approval-gated admin console, and metadata-only cloud
+provisioning. The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -24,6 +25,9 @@ deliberately outside the public boundary.
 - Fail-closed multi-tenant organizations and workspaces with OWNER, ADMIN,
   MANAGER, OPERATOR, and VIEWER roles.
 - Workspace-isolated knowledge, agents, skills, tasks, comments, and audit activity.
+- Read-only tenant billing views with Free, Pro, Team, and Enterprise plans.
+- Server-side usage metering and pre-mutation limits enforcement.
+- Approval-only plan changes and organization blocking; no payment processor.
 
 ## Architecture
 
@@ -108,6 +112,16 @@ fail closed. Membership and capability changes require an existing one-time
 approval. See [teams](docs/teams.md), [workspaces](docs/workspaces.md),
 [roles](docs/roles.md), [knowledge base](docs/knowledge-base.md), and
 [multi-tenancy security](docs/security-multitenancy.md).
+
+## Cloud and Billing Foundation
+
+Organizations receive a Free subscription lazily and may be assigned another
+plan only through the protected Admin Console approval flow. Usage events accept
+only trusted runtime sources and are immutable. Public clients can read their
+own plan, usage, and limits but cannot modify billing state. Cloud provisioning
+creates tenant metadata only; it allocates no external infrastructure and makes
+no charge. See [billing](docs/billing.md), [plans](docs/plans.md),
+[usage](docs/usage.md), and [cloud architecture](docs/cloud-architecture.md).
 
 ## Security
 
