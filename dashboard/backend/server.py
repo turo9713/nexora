@@ -20,6 +20,8 @@ from nexora.dashboard.api import DashboardAPI, DashboardAPIError
 from nexora.dashboard.auth import AuthService, BruteForceProtector, Session, SessionManager
 from nexora.dashboard.permissions import DashboardPermissions
 from nexora.collaboration import TeamService
+from nexora.billing import BillingFoundation
+from nexora.admin import AdminConsole
 from nexora.database import SQLiteRepository
 from nexora.integrations.telegram_runtime.services.approval_service import ApprovalService
 from nexora.integrations.telegram_runtime.services.audit_service import AuditService
@@ -136,7 +138,9 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     playground = PlaygroundService(audit)
     teams = TeamService(database, policy, audit)
     teams.bootstrap_personal(namespace)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams)
+    billing = BillingFoundation(database, audit)
+    admin_console = AdminConsole(billing, namespace, policy)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -160,7 +164,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/2.2"
+    server_version = "NexoraDashboard/2.3"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -207,6 +211,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             template_install_match = re.fullmatch(r"/api/templates/([^/]+)/install", path)
             key_action_match = re.fullmatch(r"/api/platform/api-keys/(KEY-[A-F0-9]{12})/(disable|delete)", path)
             webhook_action_match = re.fullmatch(r"/api/platform/webhooks/(WH-[A-F0-9]{12})/(disable|delete)", path)
+            plan_change_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/plan", path)
+            organization_status_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/(block|unblock)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
             if agent_match:
                 agent_id = agent_match.group(1)
@@ -235,6 +241,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             if webhook_action_match:
                 webhook_id, action = webhook_action_match.groups()
                 response = self.app.api.request_webhook_action(webhook_id, action, session.session_id)
+                self.app.api.audit_access(path)
+                self._json(202, response)
+                return
+            if plan_change_match:
+                response = self.app.api.request_plan_change(plan_change_match.group(1), str(body.get("plan_id") or ""), session.session_id)
+                self.app.api.audit_access(path)
+                self._json(202, response)
+                return
+            if organization_status_match:
+                organization_id, action = organization_status_match.groups()
+                response = self.app.api.request_organization_block(organization_id, action == "block", session.session_id)
                 self.app.api.audit_access(path)
                 self._json(202, response)
                 return
@@ -295,6 +312,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.list_members(query)
             elif path == "/api/knowledge":
                 response = self.app.api.list_knowledge(query)
+            elif path == "/api/plans":
+                response = self.app.api.list_plans()
+            elif path == "/api/billing":
+                response = self.app.api.billing_summary(query)
+            elif path == "/api/usage-v23":
+                response = self.app.api.usage_summary_v23(query)
+            elif path == "/api/limits":
+                response = self.app.api.limits_summary(query)
+            elif path == "/api/admin":
+                response = self.app.api.admin_summary()
             elif path == "/api/approvals":
                 response = self.app.api.list_approvals(query)
             elif path == "/api/audit":
@@ -379,6 +406,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "members:read"
             if path == "/api/knowledge":
                 return "knowledge:read"
+            if path == "/api/plans":
+                return "plans:read"
+            if path == "/api/billing":
+                return "billing:read"
+            if path == "/api/usage-v23":
+                return "usage:read"
+            if path == "/api/limits":
+                return "limits:read"
+            if path == "/api/admin":
+                return "admin:read"
             if path == "/api/approvals":
                 return "approvals:read"
             if path == "/api/audit":
@@ -406,6 +443,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "api_keys:manage"
             if path == "/api/platform/webhooks" or re.fullmatch(r"/api/platform/webhooks/WH-[A-F0-9]{12}/(disable|delete)", path):
                 return "webhooks:manage"
+            if re.fullmatch(r"/api/admin/organizations/ORG-[A-F0-9]{12}/(?:plan|block|unblock)", path):
+                return "admin:manage"
         return None
 
     def _json_body(self) -> dict[str, Any] | None:
@@ -443,7 +482,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})

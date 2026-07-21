@@ -6,6 +6,11 @@ dashboard owner namespace through TeamService. Frontend code has no SQLite,
 OpenClaw Gateway, shell, or secret access. Foreign tenant identifiers produce a
 generic unavailable response.
 
+Nexora 2.3 adds `/billing`, `/usage`, `/plans`, and `/admin`. Tenant pages show
+only the authenticated owner's organizations. Admin plan/block controls create
+an approval and cannot execute directly from the browser. The Dashboard has no
+payment provider, card fields, cloud credentials, or Gateway access.
+
 The production service is `nexora-dashboard`. Docker publishes its TLS port
 only on VPS localhost: `127.0.0.1:18880`. It is intentionally not attached to
 the Gateway network and has no Gateway credentials.

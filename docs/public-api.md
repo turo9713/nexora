@@ -23,6 +23,17 @@ Tasks may include `workspace_id`. Agent and skill listing may use the same query
 parameter to return only components assigned to that workspace. Tenant IDs are
 never authorization credentials; membership and RBAC are checked independently.
 
+## Nexora 2.3 billing endpoints
+
+- `GET /api/v1/plans` requires `plans:read`.
+- `GET /api/v1/subscription?organization_id=...` requires `billing:read`.
+- `GET /api/v1/usage?organization_id=...` requires `usage:read`.
+- `GET /api/v1/limits?organization_id=...` requires `limits:read`.
+
+There are intentionally no public subscription, usage, limit, payment, or cloud
+write endpoints. Task/workspace/member/knowledge mutations enforce relevant
+limits before changing state.
+
 The API is a separate process and authenticated facade over TaskService,
 Agent Registry, Skill Registry, Policy Engine, approvals, and owner-isolated
 repositories. It does not import OpenClawProvider or OpenClawTransport and has

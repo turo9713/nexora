@@ -29,6 +29,12 @@ class DashboardPermissions:
         "workspaces:read",
         "members:read",
         "knowledge:read",
+        "plans:read",
+        "billing:read",
+        "usage:read",
+        "limits:read",
+        "admin:read",
+        "admin:manage",
     }
 
     def authorize(self, session: Session | None, permission: str) -> bool:

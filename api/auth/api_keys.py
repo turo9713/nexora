@@ -26,6 +26,10 @@ API_SCOPES = {
     "members:invite",
     "knowledge:read",
     "knowledge:write",
+    "plans:read",
+    "billing:read",
+    "usage:read",
+    "limits:read",
 }
 KEY_PATTERN = re.compile(r"^nx_live_([a-f0-9]{12})_([A-Za-z0-9_-]{32,})$")
 

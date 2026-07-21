@@ -54,6 +54,7 @@ class SQLiteRepository:
             (4, self.migrations_root / "004_public_api.sql"),
             (5, self.migrations_root / "005_community.sql"),
             (6, self.migrations_root / "006_teams.sql"),
+            (7, self.migrations_root / "007_cloud_billing.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -63,22 +64,25 @@ class SQLiteRepository:
                     applied = None
                 if applied is not None:
                     continue
-                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version == 6 else None
-                if version == 6 and current_version == 5:
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7} else None
+                if version in {6, 7} and current_version == version - 1:
                     connection.commit()
-                    self._backup_before_v6(connection)
+                    self._backup_before_version(connection, version)
                 connection.executescript(path.read_text(encoding="utf-8"))
                 connection.execute(
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
-                if version == 6 and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                    raise RuntimeError("migration 006 integrity check failed")
+                if version in {6, 7} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError(f"migration {version:03d} integrity check failed")
         self._secure_database()
         return self.schema_version()
 
     def _backup_before_v6(self, source: sqlite3.Connection) -> None:
-        backup = self.path.with_suffix(self.path.suffix + ".pre-v6.backup")
+        self._backup_before_version(source, 6)
+
+    def _backup_before_version(self, source: sqlite3.Connection, version: int) -> None:
+        backup = self.path.with_suffix(self.path.suffix + f".pre-v{version}.backup")
         temporary = backup.with_suffix(backup.suffix + ".tmp")
         if backup.is_symlink() or temporary.is_symlink():
             raise RuntimeError("unsafe database backup path")
@@ -98,13 +102,13 @@ class SQLiteRepository:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def rollback(self, version: int = 6) -> None:
-        if version not in {1, 2, 3, 4, 5, 6}:
+    def rollback(self, version: int = 7) -> None:
+        if version not in {1, 2, 3, 4, 5, 6, 7}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -236,7 +240,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 6
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 7
         except sqlite3.Error:
             return False
 
@@ -761,6 +765,14 @@ class SQLiteRepository:
         self._secure_database()
         return {"id": workspace_id, "organization_id": organization_id, "name": name[:120], "description": description[:1000], "status": "ACTIVE", "created_at": now}
 
+    def get_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id,organization_id,name,description,status,created_at FROM workspaces WHERE id=?",
+                (workspace_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def membership(self, external_hash: str, workspace_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -1094,3 +1106,163 @@ class SQLiteRepository:
             "agents": [dict(row) for row in agents],
             "skills": [dict(row) for row in skills],
         }
+
+    # Cloud and billing foundation (v2.3). Public callers use the service layer;
+    # these methods intentionally expose no client-controlled usage mutation.
+    def list_plans(self, *, active_only: bool = True) -> list[dict[str, Any]]:
+        query = "SELECT id,name,tier,limits,features,status,created_at FROM plans"
+        if active_only:
+            query += " WHERE status='ACTIVE'"
+        query += " ORDER BY tier"
+        with self._connect() as connection:
+            rows = connection.execute(query).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_plan(self, plan_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id,name,tier,limits,features,status,created_at FROM plans WHERE id=?",
+                (plan_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def ensure_subscription(self, organization_id: str, plan_id: str = "free") -> dict[str, Any]:
+        now = utc_now()
+        subscription_id = "SUB-" + hashlib.sha256(organization_id.encode()).hexdigest()[:12].upper()
+        with self._connect() as connection:
+            created = connection.execute(
+                "INSERT OR IGNORE INTO subscriptions(id,organization_id,plan_id,status,started_at,expires_at,created_at,updated_at) "
+                "VALUES(?,?,?,'ACTIVE',?,NULL,?,?)",
+                (subscription_id, organization_id, plan_id, now, now, now),
+            ).rowcount == 1
+            row = connection.execute(
+                "SELECT s.id,s.organization_id,s.plan_id,s.status,s.started_at,s.expires_at,s.created_at,s.updated_at,p.name plan_name "
+                "FROM subscriptions s JOIN plans p ON p.id=s.plan_id WHERE s.organization_id=?",
+                (organization_id,),
+            ).fetchone()
+        self._secure_database()
+        if row is None:
+            raise RuntimeError("subscription unavailable")
+        result = dict(row)
+        result["_created"] = created
+        return result
+
+    def get_subscription(self, organization_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT s.id,s.organization_id,s.plan_id,s.status,s.started_at,s.expires_at,s.created_at,s.updated_at,p.name plan_name "
+                "FROM subscriptions s JOIN plans p ON p.id=s.plan_id WHERE s.organization_id=?",
+                (organization_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def set_subscription(self, organization_id: str, plan_id: str, status: str = "ACTIVE", expires_at: str | None = None) -> dict[str, Any]:
+        if status not in {"TRIAL", "ACTIVE", "PAUSED", "CANCELLED", "EXPIRED"}:
+            raise ValueError("invalid subscription status")
+        self.ensure_subscription(organization_id)
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE subscriptions SET plan_id=?,status=?,expires_at=?,updated_at=? WHERE organization_id=?",
+                (plan_id, status, expires_at, utc_now(), organization_id),
+            ).rowcount
+        if changed != 1:
+            raise KeyError("subscription unavailable")
+        self._secure_database()
+        result = self.get_subscription(organization_id)
+        if result is None:
+            raise RuntimeError("subscription unavailable")
+        return result
+
+    def set_subscription_status(self, organization_id: str, status: str) -> None:
+        if status not in {"TRIAL", "ACTIVE", "PAUSED", "CANCELLED", "EXPIRED"}:
+            raise ValueError("invalid subscription status")
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE subscriptions SET status=?,updated_at=? WHERE organization_id=?",
+                (status, utc_now(), organization_id),
+            ).rowcount
+        if changed != 1:
+            raise KeyError("subscription unavailable")
+
+    def insert_usage_event(self, event: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO usage_events(id,organization_id,workspace_id,metric,value,source,timestamp) VALUES(?,?,?,?,?,?,?)",
+                (event["id"], event["organization_id"], event.get("workspace_id"), event["metric"], int(event["value"]), event["source"], event["timestamp"]),
+            )
+        self._secure_database()
+
+    def usage_summary(self, organization_id: str, month: str) -> dict[str, int]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT metric,COALESCE(SUM(value),0) total FROM usage_events WHERE organization_id=? AND substr(timestamp,1,7)=? GROUP BY metric",
+                (organization_id, month),
+            ).fetchall()
+        return {str(row["metric"]): int(row["total"]) for row in rows}
+
+    def organization_resource_usage(self, organization_id: str, month: str) -> dict[str, int]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM workspaces WHERE organization_id=? AND status='ACTIVE') workspaces,"
+                "(SELECT COUNT(DISTINCT m.user_id) FROM workspace_members m JOIN workspaces w ON w.id=m.workspace_id WHERE w.organization_id=? AND m.status='ACTIVE') members,"
+                "(SELECT COUNT(DISTINCT a.agent_id) FROM workspace_agents a JOIN workspaces w ON w.id=a.workspace_id WHERE w.organization_id=? AND a.enabled=1) agents,"
+                "(SELECT COUNT(*) FROM tasks WHERE organization_id=? AND substr(created_at,1,7)=?) tasks_monthly,"
+                "(SELECT COALESCE(SUM(length(k.content)),0) FROM knowledge_documents k JOIN workspaces w ON w.id=k.workspace_id WHERE w.organization_id=?) storage_bytes",
+                (organization_id, organization_id, organization_id, organization_id, month, organization_id),
+            ).fetchone()
+        return {
+            "workspace_limit": int(row["workspaces"]),
+            "members_limit": int(row["members"]),
+            "agents_limit": int(row["agents"]),
+            "tasks_monthly": int(row["tasks_monthly"]),
+            "storage_bytes": int(row["storage_bytes"]),
+        }
+
+    def get_limit_overrides(self, organization_id: str) -> dict[str, int | None]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT metric,value FROM limits WHERE organization_id=? AND source='CUSTOM'",
+                (organization_id,),
+            ).fetchall()
+        return {str(row["metric"]): (None if row["value"] is None else int(row["value"])) for row in rows}
+
+    def insert_billing_event(self, event: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO billing_events(id,organization_id,event,result,metadata,created_at) VALUES(?,?,?,?,?,?)",
+                (event["id"], event["organization_id"], event["event"], event["result"], json.dumps(event.get("metadata", {}), separators=(",", ":"), ensure_ascii=False), event["created_at"]),
+            )
+        self._secure_database()
+
+    def list_billing_events(self, organization_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,event,result,metadata,created_at FROM billing_events WHERE organization_id=? ORDER BY created_at DESC LIMIT ?",
+                (organization_id, max(1, min(200, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_cloud_organizations(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT o.id,o.name,o.status,o.created_at,o.updated_at,s.plan_id,s.status subscription_status "
+                "FROM organizations o LEFT JOIN subscriptions s ON s.organization_id=o.id ORDER BY o.created_at DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_cloud_resource(self, resource: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO cloud_resources(id,organization_id,workspace_id,resource_type,status,metadata,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (resource["id"], resource["organization_id"], resource.get("workspace_id"), resource["resource_type"], resource["status"], json.dumps(resource.get("metadata", {}), separators=(",", ":"), ensure_ascii=False), resource["created_at"], resource["updated_at"]),
+            )
+        self._secure_database()
+
+    def list_cloud_resources(self, organization_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,workspace_id,resource_type,status,created_at,updated_at FROM cloud_resources WHERE organization_id=? ORDER BY created_at",
+                (organization_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]

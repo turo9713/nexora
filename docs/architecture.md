@@ -16,6 +16,16 @@ Organizations and workspaces wrap the existing runtime rather than replacing
 it. Existing owner namespaces and JSON state remain compatible; migration 006
 adds nullable tenant references to tasks and new collaboration tables.
 
+## Cloud and billing path (v2.3)
+
+```text
+Organization -> Subscription -> Plan -> Limits -> Trusted Usage Meter -> Runtime
+```
+
+Limit checks happen before supported mutations. Billing endpoints are read-only;
+admin changes reuse the existing management task, approval, policy, and audit
+path. Cloud Manager records local metadata and has no provider credentials.
+
 Nexora 2.0 preserves the proven runtime packages and adds a public release
 boundary. `core/README.md` maps Core to the existing packages without copying
 or renaming modules.

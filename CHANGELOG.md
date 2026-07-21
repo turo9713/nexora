@@ -2,6 +2,23 @@
 
 All notable changes follow Semantic Versioning.
 
+## [2.3.0] - 2026-07-21
+
+### Added
+
+- Four seeded plans, organization subscriptions, trusted-source usage metering, and a fail-closed limits engine.
+- Tenant-scoped read-only Billing API and Dashboard views for plans, subscription, usage, and effective limits.
+- Approval-only Admin Console operations for plan changes and organization blocking.
+- Metadata-only Cloud Manager provisioning with no payment provider or infrastructure allocation.
+- Reversible SQLite migration 007 with automatic pre-migration backup, integrity validation, and immutable usage/billing event triggers.
+
+### Security
+
+- External clients cannot write usage, change subscriptions, or access another organization's billing data.
+- Quotas are checked before task, workspace, member, or knowledge mutations.
+- Plan and account status changes require the protected admin namespace, exact one-time approval, Policy Engine authorization, and audit.
+- No real payment processing, Gateway exposure, production deployment, or infrastructure mutation was added.
+
 ## [2.2.0] - 2026-07-21
 
 ### Added
