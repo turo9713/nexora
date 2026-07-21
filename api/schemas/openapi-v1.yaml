@@ -1,13 +1,44 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 1.7.0
+  version: 3.4.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
 security:
   - bearerAuth: []
 paths:
+  /dashboard:
+    get:
+      operationId: getUserDashboard
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Tenant-scoped operational dashboard summary}
+        "404": {description: Workspace not found or unavailable}
+  /activity:
+    get:
+      operationId: listActivity
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        "200": {description: Sanitized workspace activity feed}
+  /notifications:
+    get:
+      operationId: listNotifications
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+        - {name: status, in: query, required: false, schema: {type: string, enum: [UNREAD, READ]}}
+      responses:
+        "200": {description: Owner- and workspace-scoped notifications}
+  /agents/status:
+    get:
+      operationId: listAgentStatus
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Safe workspace agent operational state}
   /creators/{id}:
     get:
       operationId: getCreator

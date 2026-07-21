@@ -98,3 +98,17 @@ Agent Builder, Agent Teams, Planning, Memory, Evaluation, SDK and Agent Security
 are additive services above the existing workspace/RBAC, Policy, Approval,
 Audit, and SQLite layers. The Dashboard and Public API call the same service
 facade; neither bypasses policy or connects directly to OpenClaw.
+
+## Operations layer v3.4
+
+```text
+Task Runtime -> Event Bus -> SQLite event journal -> Realtime Service -> SSE -> Dashboard
+                                      |
+                                      +-> activity / notifications / analytics
+```
+
+Migration 011 adds notification, agent-status, and dashboard-metric projections.
+The v2.2 `activity_events` journal is reused rather than duplicated. Dashboard
+and Public API requests resolve identity, workspace membership, RBAC, and scope
+before querying these projections. Realtime is a same-origin authenticated
+read stream; it is not a command channel and has no provider or tool access.

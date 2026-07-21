@@ -25,6 +25,7 @@ from nexora.webhooks import WebhookService, WebhookValidationError
 from nexora.marketplace import MarketplaceError, MarketplaceService
 from nexora.creators import CreatorError, CreatorService
 from nexora.dashboard.runtime import DashboardTaskRuntime, DashboardTaskRuntimeError
+from nexora.operations import OperationsAccessDenied, OperationsService, OperationsValidationError
 
 
 TASK_STATUSES = {
@@ -67,6 +68,7 @@ class DashboardAPI:
         creators: CreatorService | None = None,
         ecosystem: Any | None = None,
         task_runtime: DashboardTaskRuntime | None = None,
+        operations: OperationsService | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -89,6 +91,7 @@ class DashboardAPI:
         self.creators = creators
         self.ecosystem = ecosystem
         self.task_runtime = task_runtime
+        self.operations = operations
         self.task_read_model = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, Any]:
@@ -114,6 +117,58 @@ class DashboardAPI:
             "web_runtime": "OK" if self.task_runtime is not None else "WARNING",
             "tasks": self.database.task_overview(self.namespace),
         }
+
+    def user_dashboard(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._operations_call("dashboard", query.get("workspace_id") or None)
+
+    def activity_feed(self, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(100, int(query.get("limit", "50"))))
+        except ValueError as exc:
+            raise DashboardAPIError(400, "INVALID_FILTER", "Некорректный лимит") from exc
+        return self._operations_call("activity", query.get("workspace_id") or None, limit=limit)
+
+    def notifications_feed(self, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(100, int(query.get("limit", "50"))))
+        except ValueError as exc:
+            raise DashboardAPIError(400, "INVALID_FILTER", "Некорректный лимит") from exc
+        return self._operations_call(
+            "notifications", query.get("workspace_id") or None,
+            status=query.get("status") or None, limit=limit,
+        )
+
+    def mark_notification_read(self, notification_id: str, query: dict[str, str] | None = None) -> dict[str, Any]:
+        return self._operations_call(
+            "mark_notification_read", notification_id,
+            (query or {}).get("workspace_id") or None,
+        )
+
+    def workspace_overview(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._operations_call("workspace_overview", query.get("workspace_id") or None)
+
+    def agent_status_center(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._operations_call("agent_status", query.get("workspace_id") or None)
+
+    def operations_analytics(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._operations_call("analytics", query.get("workspace_id") or None)
+
+    def realtime_events(self, query: dict[str, str], after_event_id: str | None = None) -> dict[str, Any]:
+        return self._operations_call(
+            "realtime_events", query.get("workspace_id") or None,
+            after_event_id=after_event_id or query.get("after") or None,
+            limit=50,
+        )
+
+    def _operations_call(self, method: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        if self.operations is None:
+            raise DashboardAPIError(503, "OPERATIONS_UNAVAILABLE", "Operations layer unavailable")
+        try:
+            return getattr(self.operations, method)(self.namespace, *args, **kwargs)
+        except OperationsAccessDenied as exc:
+            raise DashboardAPIError(404, "WORKSPACE_NOT_FOUND", "Workspace не найден или недоступен") from exc
+        except OperationsValidationError as exc:
+            raise DashboardAPIError(400, "VALIDATION_ERROR", "Некорректный запрос") from exc
 
     def agent_center(self, query: dict[str, str]) -> dict[str, Any]:
         workspace_id = self._workspace(query)

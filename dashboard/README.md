@@ -11,6 +11,21 @@ The dashboard is an internal HTTPS application composed of:
 The browser never receives database paths, secrets, system prompts, raw logs,
 or OpenClaw credentials.
 
+## User Experience and Operations (v3.4)
+
+`/home` is the owner entry point for a workspace-scoped summary. `/activity`,
+`/notifications`, `/workspace`, `/agents/status`, `/analytics`, and
+`/onboarding` are safe projections of existing tasks, Event Bus records, RBAC,
+agent manifests, and billing limits.
+
+Task changes reach the browser through authenticated same-origin Server-Sent
+Events at `/api/realtime/tasks`. EventSource reconnects with the last durable
+event ID; every read is filtered by an authorized workspace. No frontend timer
+polls the task API. The stream and JSON endpoints return only bounded,
+allowlisted fields. The only v3.4 mutation is marking a notification as read;
+it requires the Dashboard session, permission check, same-origin CSRF token,
+workspace ownership, and audit event.
+
 ## Agent Control Center (v3.2)
 
 The Agents page is strictly read-only. It displays safe manifest metadata,

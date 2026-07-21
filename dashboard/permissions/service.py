@@ -8,6 +8,9 @@ class DashboardPermissions:
 
     ALLOWED = {
         "health:read",
+        "operations:read",
+        "notifications:read",
+        "notifications:write",
         "tasks:read",
         "agents:read",
         "approvals:read",

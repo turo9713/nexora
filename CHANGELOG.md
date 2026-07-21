@@ -2,6 +2,28 @@
 
 All notable changes follow Semantic Versioning.
 
+## [3.4.0] - 2026-07-22
+
+### Added
+
+- Tenant-scoped `/home`, activity, notifications, workspace overview, agent
+  status, operations analytics, and safe onboarding Dashboard pages.
+- Authenticated SSE task updates with durable Event Bus cursors, automatic
+  reconnect, and workspace filtering instead of browser polling.
+- Scoped read-only public API endpoints for dashboard, activity, notifications,
+  and agent status.
+- Reversible migration 011 for notifications, agent status history, dashboard
+  metrics, and indexes over the existing activity journal.
+
+### Security
+
+- Operational projections expose only allowlisted fields; raw metadata,
+  context, logs, secrets, and provider/Gateway access remain unavailable.
+- All reads retain authentication, RBAC, tenant isolation, rate limits, request
+  correlation, and audit. Notification read state requires session CSRF.
+- Task Control Center remains read-only and no tool, shell, service, Docker, or
+  production mutation was added.
+
 ## [3.3.0] - 2026-07-22
 
 ### Added

@@ -58,6 +58,7 @@ class SQLiteRepository:
             (8, self.migrations_root / "008_marketplace.sql"),
             (9, self.migrations_root / "009_creator_economy.sql"),
             (10, self.migrations_root / "010_agent_ecosystem.sql"),
+            (11, self.migrations_root / "011_operations.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -67,8 +68,8 @@ class SQLiteRepository:
                     applied = None
                 if applied is not None:
                     continue
-                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10} else None
-                if version in {6, 7, 8, 9, 10} and current_version == version - 1:
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10, 11} else None
+                if version in {6, 7, 8, 9, 10, 11} and current_version == version - 1:
                     connection.commit()
                     self._backup_before_version(connection, version)
                 connection.executescript(path.read_text(encoding="utf-8"))
@@ -76,7 +77,7 @@ class SQLiteRepository:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
-                if version in {6, 7, 8, 9, 10} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                if version in {6, 7, 8, 9, 10, 11} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError(f"migration {version:03d} integrity check failed")
         self._secure_database()
         return self.schema_version()
@@ -105,13 +106,13 @@ class SQLiteRepository:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def rollback(self, version: int = 10) -> None:
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}:
+    def rollback(self, version: int = 11) -> None:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem", 11: "operations"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -174,15 +175,82 @@ class SQLiteRepository:
 
     def insert_task_event(self, event: dict[str, Any]) -> None:
         with self._connect() as connection:
-            connection.execute(
+            inserted = connection.execute(
                 "INSERT OR IGNORE INTO task_events(id, task_id, event_type, payload, created_at) VALUES(?, ?, ?, ?, ?)",
                 (
                     str(event["event_id"]), event.get("task_id"), str(event["type"]),
                     json.dumps(event.get("metadata", {}), ensure_ascii=False, separators=(",", ":")),
                     str(event["timestamp"]),
                 ),
-            )
+            ).rowcount
+            if inserted:
+                self._project_operations_event(connection, event)
         self._secure_database()
+
+    def _project_operations_event(self, connection: sqlite3.Connection, event: dict[str, Any]) -> None:
+        """Build v3.4 read projections without exposing raw event metadata."""
+        event_type = str(event.get("type") or "").upper()
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        if event_type == "TASK_UPDATED" and str(metadata.get("status") or "").upper() == "FAILED":
+            event_type = "TASK_FAILED"
+        task_id = str(event.get("task_id") or "")
+        if not task_id:
+            return
+        task = connection.execute(
+            "SELECT t.id,t.owner,t.workspace_id,t.agent,t.error_code,u.id user_id "
+            "FROM tasks t JOIN users u ON u.external_hash=t.owner WHERE t.id=?",
+            (task_id,),
+        ).fetchone()
+        if task is None or not task["workspace_id"]:
+            return
+        workspace_id = str(task["workspace_id"])
+        timestamp = str(event.get("timestamp") or utc_now())
+        event_id = str(event.get("event_id") or "")
+        notification_type = {
+            "TASK_COMPLETED": "TASK_COMPLETED",
+            "TASK_FAILED": "TASK_FAILED",
+            "APPROVAL_CREATED": "APPROVAL_REQUIRED",
+            "AGENT_ERROR": "AGENT_ERROR",
+            "SECURITY_DENIED": "SECURITY_ALERT",
+        }.get(event_type)
+        if notification_type:
+            messages = {
+                "TASK_COMPLETED": f"Задача {task_id[:100]} завершена.",
+                "TASK_FAILED": f"Задача {task_id[:100]} завершилась с безопасной ошибкой.",
+                "APPROVAL_REQUIRED": f"Для задачи {task_id[:100]} требуется подтверждение.",
+                "AGENT_ERROR": f"Агент сообщил об ошибке в задаче {task_id[:100]}.",
+                "SECURITY_ALERT": "Операция заблокирована политикой безопасности.",
+            }
+            notification_id = "NTF-" + hashlib.sha256(event_id.encode()).hexdigest()[:16].upper()
+            connection.execute(
+                "INSERT OR IGNORE INTO notifications(id,user_id,workspace_id,type,message,status,created_at) "
+                "VALUES(?,?,?,?,?,'UNREAD',?)",
+                (notification_id, int(task["user_id"]), workspace_id, notification_type, messages[notification_type], timestamp),
+            )
+        status_map = {
+            "AGENT_STARTED": ("RUNNING", "GOOD"),
+            "AGENT_FINISHED": ("IDLE", "GOOD"),
+            "AGENT_ERROR": ("ERROR", "DEGRADED"),
+            "TASK_FAILED": ("ERROR", "DEGRADED"),
+        }
+        if event_type in status_map:
+            status, health = status_map[event_type]
+            connection.execute(
+                "INSERT OR IGNORE INTO agent_status_history(id,workspace_id,agent_id,task_id,status,health,error_code,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    "ASH-" + hashlib.sha256(event_id.encode()).hexdigest()[:16].upper(),
+                    workspace_id, str(task["agent"] or "unknown")[:100], task_id, status, health,
+                    str(task["error_code"] or "")[:100] or None, timestamp,
+                ),
+            )
+        connection.execute(
+            "INSERT OR IGNORE INTO dashboard_metrics(id,workspace_id,metric,value,period,created_at) VALUES(?,?,?,?,?,?)",
+            (
+                "DMT-" + hashlib.sha256(event_id.encode()).hexdigest()[:16].upper(),
+                workspace_id, event_type[:100], 1.0, timestamp[:10], timestamp,
+            ),
+        )
 
     def upsert_approval(self, approval: dict[str, Any]) -> None:
         owner = str(approval["owner_namespace"])
@@ -243,7 +311,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 10
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 11
         except sqlite3.Error:
             return False
 
@@ -998,6 +1066,219 @@ class SQLiteRepository:
                 (workspace_id, max(1, min(200, int(limit)))),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def create_notification(
+        self,
+        notification_id: str,
+        owner: str,
+        workspace_id: str,
+        notification_type: str,
+        message: str,
+        *,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        user_id = self.ensure_user(owner)
+        now = created_at or utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO notifications(id,user_id,workspace_id,type,message,status,created_at) VALUES(?,?,?,?,?,'UNREAD',?)",
+                (notification_id, user_id, workspace_id, notification_type, str(message)[:500], now),
+            )
+        self._secure_database()
+        return {
+            "id": notification_id, "workspace_id": workspace_id, "type": notification_type,
+            "message": str(message)[:500], "status": "UNREAD", "created_at": now, "read_at": None,
+        }
+
+    def list_notifications(
+        self,
+        owner: str,
+        workspace_id: str,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        query = (
+            "SELECT n.id,n.workspace_id,n.type,n.message,n.status,n.created_at,n.read_at "
+            "FROM notifications n JOIN users u ON u.id=n.user_id "
+            "WHERE u.external_hash=? AND n.workspace_id=?"
+        )
+        values: list[Any] = [owner, workspace_id]
+        if status:
+            query += " AND n.status=?"
+            values.append(status)
+        query += " ORDER BY n.created_at DESC,n.id DESC LIMIT ?"
+        values.append(max(1, min(200, int(limit))))
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(values)).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_notification_read(self, owner: str, workspace_id: str, notification_id: str) -> bool:
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE notifications SET status='READ',read_at=COALESCE(read_at,?) "
+                "WHERE id=? AND workspace_id=? AND user_id=(SELECT id FROM users WHERE external_hash=?)",
+                (utc_now(), notification_id, workspace_id, owner),
+            ).rowcount
+        self._secure_database()
+        return changed == 1
+
+    def operations_dashboard(self, owner: str, workspace_id: str) -> dict[str, int | str | None]:
+        with self._connect() as connection:
+            workspace = connection.execute(
+                "SELECT id,name,organization_id FROM workspaces WHERE id=?",
+                (workspace_id,),
+            ).fetchone()
+            counts = connection.execute(
+                "SELECT COUNT(*) total,"
+                "COUNT(CASE WHEN status IN ('NEW','CLARIFYING','QUEUED','PLANNING','IN_PROGRESS','WAITING_APPROVAL') THEN 1 END) active,"
+                "COUNT(CASE WHEN status='COMPLETED' THEN 1 END) completed,"
+                "COUNT(CASE WHEN status='FAILED' THEN 1 END) failed,"
+                "COUNT(DISTINCT CASE WHEN status IN ('NEW','CLARIFYING','QUEUED','PLANNING','IN_PROGRESS','WAITING_APPROVAL') THEN lower(agent) END) running_agents "
+                "FROM tasks WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+            pending = connection.execute(
+                "SELECT COUNT(*) FROM approvals a JOIN tasks t ON t.id=a.task_id "
+                "WHERE t.workspace_id=? AND a.owner=? AND a.status='PENDING'",
+                (workspace_id, owner),
+            ).fetchone()[0]
+            members = connection.execute(
+                "SELECT COUNT(*) FROM workspace_members WHERE workspace_id=? AND status='ACTIVE'",
+                (workspace_id,),
+            ).fetchone()[0]
+            agents = connection.execute(
+                "SELECT COUNT(*) FROM workspace_agents WHERE workspace_id=? AND enabled=1",
+                (workspace_id,),
+            ).fetchone()[0]
+            skills = connection.execute(
+                "SELECT COUNT(*) FROM workspace_skills WHERE workspace_id=? AND enabled=1",
+                (workspace_id,),
+            ).fetchone()[0]
+            unread = connection.execute(
+                "SELECT COUNT(*) FROM notifications n JOIN users u ON u.id=n.user_id "
+                "WHERE n.workspace_id=? AND u.external_hash=? AND n.status='UNREAD'",
+                (workspace_id, owner),
+            ).fetchone()[0]
+            cursor = connection.execute(
+                "SELECT e.id FROM task_events e JOIN tasks t ON t.id=e.task_id "
+                "WHERE t.workspace_id=? ORDER BY e.created_at DESC,e.id DESC LIMIT 1",
+                (workspace_id,),
+            ).fetchone()
+        return {
+            "workspace_id": workspace_id,
+            "workspace_name": None if workspace is None else str(workspace["name"]),
+            "organization_id": None if workspace is None else str(workspace["organization_id"]),
+            "tasks_total": int(counts["total"] or 0),
+            "active_tasks": int(counts["active"] or 0),
+            "completed_tasks": int(counts["completed"] or 0),
+            "failed_tasks": int(counts["failed"] or 0),
+            "running_agents": int(counts["running_agents"] or 0),
+            "pending_approvals": int(pending or 0),
+            "members": int(members or 0),
+            "agents": int(agents or 0),
+            "skills": int(skills or 0),
+            "unread_notifications": int(unread or 0),
+            "realtime_cursor": None if cursor is None else str(cursor["id"]),
+        }
+
+    def list_operations_activity(self, workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,event,resource_id,payload,created_at,source FROM ("
+                " SELECT e.id id,e.event_type event,e.task_id resource_id,e.payload payload,e.created_at created_at,'runtime' source"
+                " FROM task_events e JOIN tasks t ON t.id=e.task_id WHERE t.workspace_id=?"
+                " UNION ALL"
+                " SELECT a.id id,a.event event,a.resource_id resource_id,a.payload payload,a.created_at created_at,'workspace' source"
+                " FROM activity_events a WHERE a.workspace_id=?"
+                ") ORDER BY created_at DESC,id DESC LIMIT ?",
+                (workspace_id, workspace_id, max(1, min(200, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_realtime_task_events(
+        self,
+        workspace_id: str,
+        *,
+        after_event_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        selected_limit = max(1, min(100, int(limit)))
+        with self._connect() as connection:
+            cursor = None
+            if after_event_id:
+                cursor = connection.execute(
+                    "SELECT e.created_at,e.id FROM task_events e JOIN tasks t ON t.id=e.task_id "
+                    "WHERE t.workspace_id=? AND e.id=?",
+                    (workspace_id, after_event_id),
+                ).fetchone()
+            if cursor is not None:
+                rows = connection.execute(
+                    "SELECT e.id,e.task_id,e.event_type,e.payload,e.created_at,t.status,t.progress,t.agent,t.error_code "
+                    "FROM task_events e JOIN tasks t ON t.id=e.task_id WHERE t.workspace_id=? "
+                    "AND (e.created_at>? OR (e.created_at=? AND e.id>?)) "
+                    "ORDER BY e.created_at ASC,e.id ASC LIMIT ?",
+                    (workspace_id, cursor["created_at"], cursor["created_at"], cursor["id"], selected_limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM (SELECT e.id,e.task_id,e.event_type,e.payload,e.created_at,t.status,t.progress,t.agent,t.error_code "
+                    "FROM task_events e JOIN tasks t ON t.id=e.task_id WHERE t.workspace_id=? "
+                    "ORDER BY e.created_at DESC,e.id DESC LIMIT ?) ORDER BY created_at ASC,id ASC",
+                    (workspace_id, selected_limit),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def agent_operational_summary(self, workspace_id: str, agent_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            active = connection.execute(
+                "SELECT id,title,status,updated_at,error_code FROM tasks WHERE workspace_id=? AND lower(agent)=lower(?) "
+                "AND status IN ('NEW','CLARIFYING','QUEUED','PLANNING','IN_PROGRESS','WAITING_APPROVAL') "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (workspace_id, agent_id),
+            ).fetchone()
+            latest = connection.execute(
+                "SELECT id,title,status,updated_at,error_code FROM tasks WHERE workspace_id=? AND lower(agent)=lower(?) "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (workspace_id, agent_id),
+            ).fetchone()
+            history = connection.execute(
+                "SELECT status,health,error_code,created_at FROM agent_status_history "
+                "WHERE workspace_id=? AND lower(agent_id)=lower(?) ORDER BY created_at DESC LIMIT 1",
+                (workspace_id, agent_id),
+            ).fetchone()
+        return {
+            "active_task": None if active is None else dict(active),
+            "latest_task": None if latest is None else dict(latest),
+            "history": None if history is None else dict(history),
+        }
+
+    def operations_analytics(self, workspace_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            totals = connection.execute(
+                "SELECT COUNT(*) created,COUNT(CASE WHEN status='COMPLETED' THEN 1 END) completed,"
+                "COUNT(CASE WHEN status='FAILED' THEN 1 END) failed,"
+                "AVG(CASE WHEN completed_at IS NOT NULL THEN (julianday(completed_at)-julianday(created_at))*86400 END) average_seconds "
+                "FROM tasks WHERE workspace_id=?",
+                (workspace_id,),
+            ).fetchone()
+            agents = connection.execute(
+                "SELECT agent,COUNT(*) executions,COUNT(CASE WHEN status='COMPLETED' THEN 1 END) completed,"
+                "COUNT(CASE WHEN status='FAILED' THEN 1 END) errors FROM tasks WHERE workspace_id=? "
+                "GROUP BY agent ORDER BY executions DESC,agent",
+                (workspace_id,),
+            ).fetchall()
+            workflow_events = connection.execute(
+                "SELECT t.id task_id,t.status,e.payload,e.created_at FROM tasks t "
+                "JOIN task_events e ON e.task_id=t.id WHERE t.workspace_id=? "
+                "ORDER BY t.id,e.created_at,e.id",
+                (workspace_id,),
+            ).fetchall()
+        return {
+            "tasks": dict(totals),
+            "agents": [dict(row) for row in agents],
+            "workflow_events": [dict(row) for row in workflow_events],
+        }
 
     def record_metric(self, metric_type: str, value: float, *, owner: str | None = None, labels: dict[str, Any] | None = None) -> None:
         safe_labels = {str(key)[:40]: str(item)[:100] for key, item in (labels or {}).items() if str(key) not in {"token", "secret", "authorization"}}

@@ -14,6 +14,8 @@ API_SCOPES = {
     "tasks:create",
     "tasks:read",
     "agents:read",
+    "operations:read",
+    "notifications:read",
     "skills:read",
     "templates:read",
     "templates:install",

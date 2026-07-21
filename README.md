@@ -3,9 +3,10 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 3.3 adds a read-only Task Control Center on top of the security-reviewed
-AI Agent Ecosystem: owner-scoped task status, existing runtime progress, safe
-lifecycle timelines, and authenticated list/detail/event API views. The repository contains the open-source
+Nexora 3.4 adds a tenant-scoped operations experience on top of the read-only
+Task Control Center: a user home, Server-Sent Event task updates, activity,
+notifications, workspace and agent status views, analytics, and safe onboarding.
+The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -14,6 +15,8 @@ deliberately outside the public boundary.
 
 - Task lifecycle, workflow routing, progress, cancellation, and idempotency.
 - Read-only Task Control Center with safe lifecycle timelines and no UI mutations.
+- User operations dashboard with workspace metrics, activity feed, notifications,
+  agent status, analytics, and event-driven task updates.
 - Eight deny-by-default agent manifests and a policy gate before execution.
 - Read-only Agent Control Center with task counts and last activity; no UI mutation controls.
 - Declarative, schema-validated skills; no arbitrary plugin code loading.
@@ -92,7 +95,8 @@ the fixed non-root container UID. Every long-running container remains UID
 
 ## Quick Start
 
-After signing in, open **Tasks** to inspect your task list, current runtime
+After signing in, open **Главная** (`/home`) for the current workspace summary,
+activity, notifications, and realtime connection state. Open **Tasks** to inspect your task list, current runtime
 progress, safe details, and lifecycle timeline. Task Control Center is strictly
 read-only: start, continuation, approval, and cancellation stay on the existing
 authorized runtime surfaces. Telegram remains available as an independent
@@ -110,6 +114,21 @@ no network request and no production action.
 
 See [Getting Started](docs/getting-started.md) for health checks and safe local
 access.
+
+## User Operations (v3.4)
+
+The Dashboard exposes `/home`, `/activity`, `/notifications`, `/workspace`,
+`/agents/status`, `/analytics`, and `/onboarding`. Task updates use authenticated
+same-origin Server-Sent Events with automatic reconnect and workspace filtering;
+the browser does not poll the task API continuously. Operational pages are read
+projections and never call tools, shell, Docker, or OpenClaw. The only local UI
+write is CSRF-protected notification read state.
+
+Scoped API keys can read `GET /api/v1/dashboard`, `GET /api/v1/activity`,
+`GET /api/v1/notifications`, and `GET /api/v1/agents/status` through the same
+RBAC, tenant, rate-limit, request/correlation ID, and audit controls. See
+[User Dashboard](docs/user-dashboard.md), [Realtime](docs/realtime.md),
+[Notifications](docs/notifications.md), and [Operations](docs/operations.md).
 
 ## Templates and Playground
 

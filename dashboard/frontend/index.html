@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Nexora Dashboard</title>
-  <link rel="stylesheet" href="/assets/styles.css?v=3.3.0">
+  <link rel="stylesheet" href="/assets/styles.css?v=3.4.0">
 </head>
 <body>
   <div id="login" class="login-shell hidden">
@@ -22,8 +22,14 @@
 
   <div id="app" class="app-shell hidden">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark small">N</span><div><strong>Nexora</strong><small>Control Panel 3.3</small></div></div>
+      <div class="brand"><span class="brand-mark small">N</span><div><strong>Nexora</strong><small>Control Panel 3.4</small></div></div>
       <nav id="nav">
+        <a href="/home" data-route="/home">Главная</a>
+        <a href="/activity" data-route="/activity">Активность</a>
+        <a href="/notifications" data-route="/notifications">Уведомления</a>
+        <a href="/workspace" data-route="/workspace">Workspace</a>
+        <a href="/agents/status" data-route="/agents/status">Статус агентов</a>
+        <a href="/analytics" data-route="/analytics">Аналитика</a>
         <a href="/" data-route="/">Обзор</a>
         <a href="/tasks" data-route="/tasks">Задачи</a>
         <a href="/agents" data-route="/agents">Агенты</a>
@@ -62,6 +68,6 @@
       <section id="content" aria-live="polite"></section>
     </main>
   </div>
-  <script src="/assets/app.js?v=3.3.0" defer></script>
+  <script src="/assets/app.js?v=3.4.0" defer></script>
 </body>
 </html>

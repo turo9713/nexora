@@ -13,6 +13,7 @@ from nexora.templates import TemplateApprovalRequired, TemplateRegistryError
 from nexora.marketplace import MarketplaceError
 from nexora.creators import CreatorError
 from nexora.storage import TaskReadModel
+from nexora.operations import OperationsAccessDenied, OperationsService, OperationsValidationError
 
 
 class APIGatewayError(RuntimeError):
@@ -26,7 +27,7 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None, operations: OperationsService | None = None) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
@@ -42,10 +43,41 @@ class APIGateway:
         self.webhooks = webhooks
         self.metrics = metrics
         self.ecosystem = ecosystem
+        self.operations = operations
         self.task_reads = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, str]:
         return {"status": "ok" if self.database.check() and self.skills.health()["ok"] and self.templates.health()["ok"] else "degraded", "version": "v1"}
+
+    def operations_dashboard(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        return self._operations_call("dashboard", principal, query)
+
+    def operations_activity(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(100, int(query.get("limit", "50"))))
+        except ValueError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
+        return self._operations_call("activity", principal, query, limit=limit)
+
+    def operations_notifications(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(100, int(query.get("limit", "50"))))
+        except ValueError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
+        return self._operations_call("notifications", principal, query, status=query.get("status") or None, limit=limit)
+
+    def operations_agent_status(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        return self._operations_call("agent_status", principal, query)
+
+    def _operations_call(self, method: str, principal: APIKeyPrincipal, query: dict[str, str], **kwargs: Any) -> dict[str, Any]:
+        if self.operations is None:
+            raise APIGatewayError(503, "OPERATIONS_UNAVAILABLE", "Operations layer unavailable")
+        try:
+            return getattr(self.operations, method)(principal.owner, query.get("workspace_id") or None, **kwargs)
+        except OperationsAccessDenied as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        except OperationsValidationError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid operations request") from exc
 
     def ecosystem_list(self, principal: APIKeyPrincipal, resource: str, query: dict[str, str]) -> dict[str, Any]:
         if self.ecosystem is None:

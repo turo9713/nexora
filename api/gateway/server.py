@@ -33,6 +33,7 @@ from nexora.templates import TemplateRegistry
 from nexora.webhooks import WebhookService
 from nexora.marketplace import MarketplaceService
 from nexora.creators import CreatorService
+from nexora.operations import OperationsService
 
 
 MAX_BODY = 32 * 1024
@@ -42,6 +43,10 @@ ROUTES = {
     ("POST", "/api/v1/tasks"): ("tasks:create", 10),
     ("GET", "/api/v1/tasks"): ("tasks:read", 60),
     ("GET", "/api/v1/agents"): ("agents:read", 60),
+    ("GET", "/api/v1/agents/status"): ("agents:read", 60),
+    ("GET", "/api/v1/dashboard"): ("operations:read", 60),
+    ("GET", "/api/v1/activity"): ("operations:read", 60),
+    ("GET", "/api/v1/notifications"): ("notifications:read", 60),
     ("GET", "/api/v1/skills"): ("skills:read", 60),
     ("GET", "/api/v1/templates"): ("templates:read", 60),
     ("GET", "/api/v1/playground/examples"): ("playground:read", 60),
@@ -130,7 +135,8 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
     marketplace = MarketplaceService(database, teams, policy, audit)
     creators = CreatorService(database, marketplace, teams, policy, audit)
     ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_secret(config.agent_memory_key_file))
-    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics, ecosystem)
+    operations = OperationsService(database, teams, agents, billing)
+    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics, ecosystem, operations)
     return PublicAPIApplication(gateway, APIKeyService(database), APIRateLimiter(), audit, metrics)
 
 
@@ -154,7 +160,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/3.3"
+    server_version = "NexoraAPI/3.4"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -225,6 +231,18 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
                 status = 202
             elif method == "GET" and path == "/api/v1/tasks":
                 response = self.app.gateway.list_tasks(principal, query)
+                status = 200
+            elif method == "GET" and path == "/api/v1/dashboard":
+                response = self.app.gateway.operations_dashboard(principal, query)
+                status = 200
+            elif method == "GET" and path == "/api/v1/activity":
+                response = self.app.gateway.operations_activity(principal, query)
+                status = 200
+            elif method == "GET" and path == "/api/v1/notifications":
+                response = self.app.gateway.operations_notifications(principal, query)
+                status = 200
+            elif method == "GET" and path == "/api/v1/agents/status":
+                response = self.app.gateway.operations_agent_status(principal, query)
                 status = 200
             elif task_events_match:
                 response = self.app.gateway.get_task_events(principal, task_events_match.group(1), query)

@@ -41,6 +41,7 @@ from nexora.webhooks import WebhookService
 from nexora.marketplace import MarketplaceService
 from nexora.creators import CreatorService
 from nexora.dashboard.runtime import DashboardTaskRuntime, build_openclaw_orchestrator
+from nexora.operations import OperationsService
 
 
 COOKIE_NAME = "__Host-nexora_session"
@@ -151,6 +152,7 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     marketplace = MarketplaceService(database, teams, policy, audit)
     creators = CreatorService(database, marketplace, teams, policy, audit, administrator=namespace)
     ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_read_secret(config.agent_memory_key_file, 32))
+    operations = OperationsService(database, teams, registry, billing)
     task_runtime = None
     if config.gateway_token_file.is_file() and not config.gateway_token_file.is_symlink():
         orchestrator = build_openclaw_orchestrator(
@@ -160,7 +162,7 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
             config.gateway_timeout_seconds,
         )
         task_runtime = DashboardTaskRuntime(orchestrator, tasks, approvals, audit, policy, config.state_root, events)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -184,7 +186,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/3.3"
+    server_version = "NexoraDashboard/3.4"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -197,6 +199,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             if not self.app.limiter.allow(self.client_address[0]):
                 self.app.api.audit_access(path, "RATE_LIMITED")
                 self._json(429, {"error": "RATE_LIMITED"})
+                return
+            if path == "/api/realtime/tasks":
+                self._stream_realtime(dict(parse_qsl(parsed.query, keep_blank_values=True)))
                 return
             self._handle_api_get(path, dict(parse_qsl(parsed.query, keep_blank_values=True)))
             return
@@ -235,6 +240,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             marketplace_install_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})/install", path)
             creator_action_match = re.fullmatch(r"/api/creator/packages/([a-z0-9][a-z0-9-]{1,62})/([0-9]+\.[0-9]+\.[0-9]+)/(submit|validate|publish)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
+            notification_match = re.fullmatch(r"/api/notifications/(NTF-[A-F0-9]{16})/read", path)
+            if notification_match:
+                response = self.app.api.mark_notification_read(
+                    notification_match.group(1),
+                    dict(parse_qsl(urlsplit(self.path).query, keep_blank_values=True)),
+                )
+                self.app.api.audit_access(path)
+                self._json(200, response)
+                return
             if path == "/api/agent-center":
                 response = self.app.api.create_custom_agent(body, session.session_id); self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response); return
             if path == "/api/agent-teams":
@@ -353,6 +367,18 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response: Any = {"authenticated": True, "csrf_token": session.csrf_token, "expires_at": session.expires_at}
             elif path == "/api/health":
                 response = self.app.api.health()
+            elif path == "/api/dashboard":
+                response = self.app.api.user_dashboard(query)
+            elif path == "/api/activity":
+                response = self.app.api.activity_feed(query)
+            elif path == "/api/notifications":
+                response = self.app.api.notifications_feed(query)
+            elif path == "/api/workspace-overview":
+                response = self.app.api.workspace_overview(query)
+            elif path == "/api/agents/status":
+                response = self.app.api.agent_status_center(query)
+            elif path == "/api/operations/analytics":
+                response = self.app.api.operations_analytics(query)
             elif path == "/api/tasks":
                 response = self.app.api.list_tasks(query)
             elif path == "/api/agents":
@@ -443,6 +469,45 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.app.api.audit_access(path, "AGENT_ECOSYSTEM_DENIED")
             self._json(404, {"error": "RESOURCE_NOT_FOUND"})
 
+    def _stream_realtime(self, query: dict[str, str]) -> None:
+        session = self._require_session("operations:read")
+        if session is None:
+            return
+        cursor = self.headers.get("Last-Event-ID", "")[:120] or query.get("after") or None
+        try:
+            initial = self.app.api.realtime_events(query, cursor)
+        except DashboardAPIError as exc:
+            self.app.api.audit_access("/api/realtime/tasks", exc.code)
+            self._json(exc.status, {"error": exc.code, "message": exc.message})
+            return
+        self.app.api.audit_access("/api/realtime/tasks")
+        self.send_response(200)
+        self._security_headers()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        started = time.monotonic()
+        heartbeat = started
+        pending = initial
+        try:
+            self.wfile.write(b"retry: 2000\n\n")
+            while time.monotonic() - started < 25:
+                for event in pending.get("items", []):
+                    self.wfile.write(self.app.api.operations.realtime.encode(event))
+                    cursor = str(event.get("event_id") or cursor or "")
+                if pending.get("items"):
+                    self.wfile.flush()
+                now = time.monotonic()
+                if now - heartbeat >= 10:
+                    self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+                    heartbeat = now
+                time.sleep(1)
+                pending = self.app.api.realtime_events(query, cursor)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            return
+
     def _login(self) -> None:
         if not self._valid_origin():
             self.app.api.audit.record("LOGIN_FAILED", severity="SECURITY", source="dashboard_auth", action_result="ORIGIN_DENIED")
@@ -476,6 +541,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if method == "GET":
             if path in {"/api/session", "/api/health"}:
                 return "health:read"
+            if path in {"/api/dashboard", "/api/activity", "/api/workspace-overview", "/api/operations/analytics", "/api/realtime/tasks"}:
+                return "operations:read"
+            if path == "/api/notifications":
+                return "notifications:read"
+            if path == "/api/agents/status":
+                return "agents:read"
             if path == "/api/tasks" or path.startswith("/api/tasks/"):
                 return "tasks:read"
             if path == "/api/agents" or path.startswith("/api/agents/"):
@@ -527,6 +598,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if method == "POST":
             if path == "/api/logout":
                 return "health:read"
+            if re.fullmatch(r"/api/notifications/NTF-[A-F0-9]{16}/read", path):
+                return "notifications:write"
             if re.fullmatch(r"/api/skills/[^/]+/(enable|disable|reload)", path):
                 return "skills:request_change"
             if re.fullmatch(r"/api/templates/[^/]+/install", path):
@@ -582,7 +655,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/home", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})

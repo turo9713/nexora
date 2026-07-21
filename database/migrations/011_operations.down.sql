@@ -1,0 +1,11 @@
+PRAGMA foreign_keys = OFF;
+DROP INDEX IF EXISTS idx_task_events_created_id;
+DROP INDEX IF EXISTS idx_activity_workspace_event_created;
+DROP INDEX IF EXISTS idx_dashboard_metrics_workspace_period;
+DROP INDEX IF EXISTS idx_agent_status_workspace_agent_created;
+DROP INDEX IF EXISTS idx_notifications_user_workspace_status;
+DROP TABLE IF EXISTS dashboard_metrics;
+DROP TABLE IF EXISTS agent_status_history;
+DROP TABLE IF EXISTS notifications;
+DELETE FROM schema_migrations WHERE version = 11;
+PRAGMA foreign_keys = ON;
