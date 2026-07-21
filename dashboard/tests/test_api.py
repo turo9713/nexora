@@ -59,6 +59,19 @@ def test_templates_playground_and_approval_reuse_existing_engine(dashboard_facto
     assert playground["mode"] == "SANDBOX_ONLY" and playground["production_tools"] is False
 
 
+def test_team_dashboard_is_owner_scoped(dashboard_factory) -> None:
+    app, _ = dashboard_factory()
+    organizations = app.api.list_organizations()["items"]
+    workspaces = app.api.list_workspaces({})["items"]
+    assert len(organizations) == 1 and organizations[0]["name"] == "Personal Organization"
+    assert len(workspaces) == 1 and workspaces[0]["role"] == "OWNER"
+    members = app.api.list_members({"workspace_id": workspaces[0]["id"]})["items"]
+    assert len(members) == 1 and members[0]["role"] == "OWNER"
+    assert app.api.list_knowledge({"workspace_id": workspaces[0]["id"]})["items"] == []
+    health = app.api.health()
+    assert health["tenancy"] == {"organizations": 1, "workspaces": 1}
+
+
 def test_agent_change_requires_existing_approval_engine(dashboard_factory) -> None:
     app, _ = dashboard_factory()
     request = app.api.request_agent_action("developer", "disable", "session-a")

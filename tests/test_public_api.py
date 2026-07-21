@@ -89,7 +89,8 @@ def test_rate_limit_per_key_endpoint_owner_and_recovery() -> None:
 def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path: Path) -> None:
     server = create_server(config(tmp_path), use_tls=False)
     app = server.RequestHandlerClass.app
-    _, full_key = issue(app, ["tasks:create", "tasks:read", "agents:read", "skills:read", "templates:read", "templates:install", "playground:read", "webhooks:manage"], "full")
+    organization = app.gateway.teams.create_organization(OWNER, "API Test Organization")
+    _, full_key = issue(app, ["tasks:create", "tasks:read", "agents:read", "skills:read", "templates:read", "templates:install", "playground:read", "webhooks:manage", "organizations:read", "workspaces:read", "workspaces:write", "members:read", "knowledge:read", "knowledge:write"], "full")
     _, read_key = issue(app, ["tasks:read"], "read-only")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -102,8 +103,16 @@ def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path
         response, data = request(connection, "POST", "/api/v1/tasks", key=read_key, body={"title": "Denied", "agent": "developer", "skill": "github-agent"})
         assert response.status == 403 and data["error"] == "SCOPE_DENIED"
 
+        foreign_owner = "e" * 32
+        foreign_org = app.gateway.teams.create_organization(foreign_owner, "Foreign Organization")
+        foreign_workspace = app.gateway.teams.create_workspace(foreign_owner, foreign_org["id"], "Foreign Workspace")
+        before = len(app.gateway.database.list_tasks(OWNER, limit=100))
+        response, data = request(connection, "POST", "/api/v1/tasks", key=full_key, body={"title": "Foreign tenant", "agent": "developer", "skill": "github-agent", "workspace_id": foreign_workspace["id"]})
+        assert response.status == 404 and data["error"] == "WORKSPACE_NOT_FOUND"
+        assert len(app.gateway.database.list_tasks(OWNER, limit=100)) == before
+
         created_ids = []
-        for index in range(10):
+        for index in range(9):
             response, data = request(connection, "POST", "/api/v1/tasks", key=full_key, body={"title": f"Analyze repository {index}", "agent": "developer", "skill": "github-agent"})
             assert response.status == 202 and data["status"] == "QUEUED"
             created_ids.append(data["task_id"])
@@ -128,6 +137,18 @@ def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path
         assert response.status == 200 and data["mode"] == "SANDBOX_ONLY" and data["external_writes"] is False
         response, data = request(connection, "GET", "/api/v1/templates", key=read_key)
         assert response.status == 403 and data["error"] == "SCOPE_DENIED"
+        response, data = request(connection, "GET", "/api/v1/organizations", key=full_key)
+        assert response.status == 200 and data["items"][0]["id"] == organization["id"]
+        response, workspace = request(connection, "POST", "/api/v1/workspaces", key=full_key, body={"organization_id": organization["id"], "name": "API Workspace", "description": "Scoped"})
+        assert response.status == 201 and workspace["organization_id"] == organization["id"]
+        response, data = request(connection, "GET", f"/api/v1/members?workspace_id={workspace['id']}", key=full_key)
+        assert response.status == 200 and data["items"][0]["role"] == "OWNER"
+        response, data = request(connection, "POST", "/api/v1/invite", key=full_key, body={"workspace_id": workspace["id"]})
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
+        response, document = request(connection, "POST", "/api/v1/knowledge", key=full_key, body={"workspace_id": workspace["id"], "name": "API Guide", "type": "markdown", "access_level": "TEAM", "content": "Safe team instructions"})
+        assert response.status == 201 and document["workspace_id"] == workspace["id"]
+        response, data = request(connection, "GET", f"/api/v1/knowledge?workspace_id={workspace['id']}", key=full_key)
+        assert response.status == 200 and data["items"][0]["name"] == "API Guide"
         response, data = request(connection, "POST", "/api/v1/webhooks", key=full_key, body={"url": "https://example.com/nexora", "events": ["TASK_COMPLETED"]})
         assert response.status == 202 and data["status"] == "WAITING_APPROVAL"
         assert "secret" not in json.dumps(data).casefold()
@@ -149,3 +170,4 @@ def test_public_api_has_no_gateway_transport_or_secret_config(tmp_path: Path) ->
     assert "openclaw_provider" not in source and "openclaw_transport" not in source
     specification = yaml.safe_load((PROJECT / "api" / "schemas" / "openapi-v1.yaml").read_text(encoding="utf-8"))
     assert specification["openapi"] == "3.1.0" and "/tasks" in specification["paths"] and "/templates" in specification["paths"]
+    assert {"/organizations", "/workspaces", "/members", "/invite", "/knowledge"}.issubset(specification["paths"])

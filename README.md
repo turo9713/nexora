@@ -3,8 +3,8 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 2.1 adds reviewed workflow templates, a safe Playground, community-skill
-submission structure, onboarding, and public examples. The repository contains the open-source
+Nexora 2.2 adds organizations, role-based team workspaces, shared knowledge,
+team tasks, and workspace-scoped activity. The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -21,6 +21,9 @@ deliberately outside the public boundary.
 - Signed HTTPS webhooks, read-only GitHub integration, and safe content drafts.
 - Declarative workflow templates with owner-isolated, reversible installation.
 - A data-only Playground and review-first Community Skills contribution flow.
+- Fail-closed multi-tenant organizations and workspaces with OWNER, ADMIN,
+  MANAGER, OPERATOR, and VIEWER roles.
+- Workspace-isolated knowledge, agents, skills, tasks, comments, and audit activity.
 
 ## Architecture
 
@@ -95,6 +98,16 @@ scoped `/api/v1/templates` and `/api/v1/playground/examples` endpoints. Template
 cannot add permissions; medium-risk templates wait for an existing one-time
 approval. See [templates](docs/templates.md), [Playground](docs/playground.md),
 and [community skills](docs/community-skills.md).
+
+## Teams and Workspaces
+
+Organizations contain isolated workspaces. Every access is resolved through the
+authenticated user, organization, workspace membership, RBAC decision, Policy
+Engine, and resource repository. Cross-workspace and cross-organization lookups
+fail closed. Membership and capability changes require an existing one-time
+approval. See [teams](docs/teams.md), [workspaces](docs/workspaces.md),
+[roles](docs/roles.md), [knowledge base](docs/knowledge-base.md), and
+[multi-tenancy security](docs/security-multitenancy.md).
 
 ## Security
 

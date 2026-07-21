@@ -1,5 +1,11 @@
 # Dashboard setup and use
 
+Nexora 2.2 adds authenticated `/organizations`, `/workspaces`, `/members`, and
+`/knowledge` views. These pages call the Dashboard API, which resolves the
+dashboard owner namespace through TeamService. Frontend code has no SQLite,
+OpenClaw Gateway, shell, or secret access. Foreign tenant identifiers produce a
+generic unavailable response.
+
 The production service is `nexora-dashboard`. Docker publishes its TLS port
 only on VPS localhost: `127.0.0.1:18880`. It is intentionally not attached to
 the Gateway network and has no Gateway credentials.

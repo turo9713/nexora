@@ -19,6 +19,13 @@ API_SCOPES = {
     "templates:install",
     "playground:read",
     "webhooks:manage",
+    "organizations:read",
+    "workspaces:read",
+    "workspaces:write",
+    "members:read",
+    "members:invite",
+    "knowledge:read",
+    "knowledge:write",
 }
 KEY_PATTERN = re.compile(r"^nx_live_([a-f0-9]{12})_([A-Za-z0-9_-]{32,})$")
 
