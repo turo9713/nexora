@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 1.3.0
+  version: 1.4.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
@@ -154,6 +154,36 @@ paths:
       operationId: requestWebhook
       responses:
         "202": {description: Waiting for approval}
+  /marketplace:
+    get:
+      operationId: listMarketplace
+      parameters:
+        - {name: search, in: query, required: false, schema: {type: string, maxLength: 100}}
+        - {name: category, in: query, required: false, schema: {type: string, maxLength: 64}}
+        - {name: type, in: query, required: false, schema: {type: string, enum: [AGENT, SKILL, TEMPLATE, INTEGRATION]}}
+      responses:
+        "200": {description: Published, security-validated marketplace items}
+  /marketplace/{id}:
+    get:
+      operationId: getMarketplaceItem
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^[a-z0-9][a-z0-9-]{1,62}$"}}
+      responses:
+        "200": {description: Safe item details and declarative manifest}
+        "404": {description: Item not found or unavailable}
+  /marketplace/{id}/install:
+    post:
+      operationId: installMarketplaceItem
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "201": {description: Installed in authorized workspace}
+        "202": {description: Waiting for approval}
+  /marketplace/publish:
+    post:
+      operationId: publishMarketplaceItem
+      responses:
+        "201": {description: Declarative package validated and published}
 components:
   securitySchemes:
     bearerAuth:

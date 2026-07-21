@@ -91,7 +91,7 @@ def test_database_migration_import_and_rollback_preserve_json(tmp_path: Path) ->
     source = state / "NX-20260721-ABCDEF.json"
     source.write_text(json.dumps(sample_task()), encoding="utf-8")
     database = SQLiteRepository(tmp_path / "database" / "nexora.sqlite3")
-    assert database.migrate() == 7
+    assert database.migrate() == 8
     assert database.import_task_directory(state.parent) == 1
     assert database.check() is True
     with sqlite3.connect(database.path) as connection:
@@ -99,6 +99,7 @@ def test_database_migration_import_and_rollback_preserve_json(tmp_path: Path) ->
     assert source.exists()
     assert oct(database.path.parent.stat().st_mode & 0o777) == "0o700"
     assert oct(database.path.stat().st_mode & 0o777) == "0o600"
+    database.rollback(8)
     database.rollback(7)
     database.rollback(6)
     database.rollback(5)

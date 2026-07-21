@@ -37,6 +37,7 @@ from nexora.metrics import MetricsService
 from nexora.playground import PlaygroundService
 from nexora.templates import TemplateRegistry
 from nexora.webhooks import WebhookService
+from nexora.marketplace import MarketplaceService
 
 
 COOKIE_NAME = "__Host-nexora_session"
@@ -140,7 +141,8 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     teams.bootstrap_personal(namespace)
     billing = BillingFoundation(database, audit)
     admin_console = AdminConsole(billing, namespace, policy)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console)
+    marketplace = MarketplaceService(database, teams, policy, audit)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -164,7 +166,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/2.3"
+    server_version = "NexoraDashboard/2.4"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -213,6 +215,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             webhook_action_match = re.fullmatch(r"/api/platform/webhooks/(WH-[A-F0-9]{12})/(disable|delete)", path)
             plan_change_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/plan", path)
             organization_status_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/(block|unblock)", path)
+            marketplace_install_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})/install", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
             if agent_match:
                 agent_id = agent_match.group(1)
@@ -279,6 +282,21 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.app.api.audit_access(path)
                 self._json(200, response)
                 return
+            if path == "/api/publisher/register":
+                response = self.app.api.register_publisher(body, session.session_id)
+                self.app.api.audit_access(path)
+                self._json(202, response)
+                return
+            if path == "/api/marketplace/publish":
+                response = self.app.api.publish_marketplace(body)
+                self.app.api.audit_access(path)
+                self._json(201, response)
+                return
+            if marketplace_install_match:
+                response = self.app.api.request_marketplace_install(marketplace_install_match.group(1), body, session.session_id)
+                self.app.api.audit_access(path)
+                self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response)
+                return
             self._json(404, {"error": "NOT_FOUND"})
         except DashboardAPIError as exc:
             self.app.api.audit_access(path, exc.code)
@@ -322,6 +340,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.limits_summary(query)
             elif path == "/api/admin":
                 response = self.app.api.admin_summary()
+            elif path == "/api/marketplace":
+                response = self.app.api.marketplace_catalog(query)
+            elif path == "/api/my-items":
+                response = self.app.api.marketplace_my_items()
+            elif path == "/api/publisher":
+                response = self.app.api.marketplace_my_items()
             elif path == "/api/approvals":
                 response = self.app.api.list_approvals(query)
             elif path == "/api/audit":
@@ -339,6 +363,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 agent_match = re.fullmatch(r"/api/agents/([^/]+)", path)
                 skill_match = re.fullmatch(r"/api/skills/([^/]+)", path)
                 template_match = re.fullmatch(r"/api/templates/([^/]+)", path)
+                marketplace_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})", path)
                 if task_match and TASK_ID.fullmatch(task_match.group(1)):
                     response = self.app.api.task_details(task_match.group(1))
                 elif agent_match and AGENT_ID.fullmatch(agent_match.group(1)):
@@ -347,6 +372,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     response = self.app.api.skill_details(skill_match.group(1))
                 elif template_match and AGENT_ID.fullmatch(template_match.group(1)):
                     response = self.app.api.template_details(template_match.group(1))
+                elif marketplace_match:
+                    response = self.app.api.marketplace_item(marketplace_match.group(1))
                 else:
                     raise DashboardAPIError(404, "NOT_FOUND", "Ресурс не найден")
             self.app.api.audit_access(path)
@@ -416,6 +443,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "limits:read"
             if path == "/api/admin":
                 return "admin:read"
+            if path == "/api/marketplace" or path.startswith("/api/marketplace/"):
+                return "marketplace:read"
+            if path in {"/api/my-items", "/api/publisher"}:
+                return "marketplace:read"
             if path == "/api/approvals":
                 return "approvals:read"
             if path == "/api/audit":
@@ -445,6 +476,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "webhooks:manage"
             if re.fullmatch(r"/api/admin/organizations/ORG-[A-F0-9]{12}/(?:plan|block|unblock)", path):
                 return "admin:manage"
+            if path in {"/api/publisher/register", "/api/marketplace/publish"} or re.fullmatch(r"/api/marketplace/[a-z0-9][a-z0-9-]{1,62}/install", path):
+                return "marketplace:manage"
         return None
 
     def _json_body(self) -> dict[str, Any] | None:
@@ -482,7 +515,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})

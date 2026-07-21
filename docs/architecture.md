@@ -77,6 +77,15 @@ SQLite, shell, Docker, or OpenClaw directly. The public API authenticates
 hashed scoped keys, applies rate limits and Policy Engine, and queues tasks. It
 does not possess a Gateway token or provider transport.
 
+## Marketplace
+
+Creator submissions enter a declarative-only validation boundary. Verified
+publisher ownership, schema and permission validation, compatibility, checksum
+integrity, Policy Engine, workspace RBAC, approval, and audit precede
+activation. The catalog stores immutable package versions and never loads or
+executes publisher code. Installations, reviews, and license metadata are
+workspace-scoped.
+
 ## Open-source boundary
 
 Core includes runtime, agents, skills, API, dashboard, security, database,

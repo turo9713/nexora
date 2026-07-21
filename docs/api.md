@@ -8,6 +8,13 @@ All `/api/*` endpoints except `/api/login` require a valid signed server-side
 session. Mutating endpoints also require an exact same-origin request and the
 session CSRF token.
 
+Marketplace Dashboard endpoints are `GET /api/marketplace`,
+`GET /api/marketplace/{id}`, `GET /api/my-items`, `GET /api/publisher`,
+`POST /api/publisher/register`, `POST /api/marketplace/publish`, and
+`POST /api/marketplace/{id}/install`. Read operations require
+`marketplace:read`; mutations require `marketplace:manage`, CSRF, policy checks,
+workspace isolation, and approval where risk requires it.
+
 ## Authentication
 
 - `POST /api/login`

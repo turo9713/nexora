@@ -1,0 +1,15 @@
+id: marketing-factory
+name: Marketing Factory
+type: TEMPLATE
+version: 1.0.0
+author: Nexora Community
+description: Coordinates reviewed marketing drafts and requires approval before activation.
+category: marketing
+permissions:
+  filesystem: {scope: workspace}
+  network: {mode: none}
+  shell: false
+risk_level: MEDIUM
+requirements: [content-optimizer]
+compatibility: {minimum_nexora: 2.4.0}
+security: {sandbox: true, secret_access: false, docker_access: false}

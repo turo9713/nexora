@@ -1,5 +1,13 @@
 # Nexora Public API v1
 
+## Nexora 2.4 marketplace endpoints
+
+- `GET /api/v1/marketplace` and `GET /api/v1/marketplace/{id}` require `marketplace:read`.
+- `POST /api/v1/marketplace/{id}/install` requires `marketplace:install` and a workspace membership; medium/high-risk items return `WAITING_APPROVAL`.
+- `POST /api/v1/marketplace/publish` requires `marketplace:publish` and a verified publisher owned by the key principal.
+
+The API accepts declarative manifests only. It never downloads or executes marketplace code.
+
 ## Nexora 2.1 community endpoints
 
 - `GET /api/v1/templates` requires `templates:read`.

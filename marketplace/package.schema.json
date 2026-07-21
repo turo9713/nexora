@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nexora.local/schemas/marketplace-package-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "type", "version", "author", "description", "permissions", "risk_level", "requirements", "compatibility", "security"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"},
+    "name": {"type": "string", "minLength": 2, "maxLength": 120},
+    "type": {"enum": ["AGENT", "SKILL", "TEMPLATE", "INTEGRATION"]},
+    "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$"},
+    "author": {"type": "string", "minLength": 2, "maxLength": 100},
+    "description": {"type": "string", "minLength": 2, "maxLength": 1000},
+    "category": {"type": "string", "maxLength": 64},
+    "permissions": {"type": "object"},
+    "risk_level": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+    "requirements": {"type": "array", "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$"}, "maxItems": 100},
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum_nexora"],
+      "properties": {"minimum_nexora": {"type": "string"}}
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sandbox"],
+      "properties": {
+        "sandbox": {"const": true},
+        "secret_access": {"const": false},
+        "docker_access": {"const": false}
+      }
+    }
+  }
+}

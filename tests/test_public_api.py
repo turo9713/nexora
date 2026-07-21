@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,14 @@ def request(connection, method: str, path: str, *, key: str | None = None, body:
     return response, data
 
 
+def marketplace_approval(database, owner: str, action_type: str) -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    approval_id = "APR-MARKET01"
+    database.upsert_task({"task_id": "NX-MARKET-API", "owner_namespace": owner, "title": "Marketplace approval", "status": "WAITING_APPROVAL", "progress": 50, "assigned_agent": "Orchestrator", "created_at": now, "updated_at": now, "completed_at": None, "result_summary": "", "error_code": None})
+    database.upsert_approval({"approval_id": approval_id, "task_id": "NX-MARKET-API", "owner_namespace": owner, "action_type": action_type, "status": "APPROVED", "expires_at": "2099-01-01T00:00:00+00:00", "used_at": now})
+    return approval_id
+
+
 def test_api_key_hash_scope_invalid_and_expired(tmp_path: Path) -> None:
     app = create_application(config(tmp_path))
     key_id, plaintext = issue(app, ["tasks:read"])
@@ -86,6 +95,44 @@ def test_rate_limit_per_key_endpoint_owner_and_recovery() -> None:
     assert limiter.allow("KEY-A", OWNER, "/api/v1/tasks", limit=2)
 
 
+def test_marketplace_http_api_scopes_publish_catalog_and_install(tmp_path: Path) -> None:
+    server = create_server(config(tmp_path), use_tls=False)
+    app = server.RequestHandlerClass.app
+    organization = app.gateway.teams.create_organization(OWNER, "Marketplace API Organization")
+    workspace = app.gateway.teams.create_workspace(OWNER, organization["id"], "Marketplace API Workspace")
+    publisher = app.gateway.marketplace.register_publisher(OWNER, "API Publisher")
+    approved = marketplace_approval(app.gateway.database, OWNER, f"marketplace:publisher_verify:{publisher['id']}")
+    app.gateway.marketplace.verify_publisher(OWNER, publisher["id"], approved)
+    _, key = issue(app, ["marketplace:read", "marketplace:publish", "marketplace:install"], "marketplace")
+    _, read_key = issue(app, ["marketplace:read"], "marketplace-read")
+    manifest = {
+        "id": "api-market-skill", "name": "API Market Skill", "type": "SKILL", "version": "1.0.0",
+        "author": "API Publisher", "description": "Safe API package", "category": "skills",
+        "permissions": {"filesystem": {"scope": "workspace"}, "network": {"mode": "none"}, "shell": False},
+        "risk_level": "LOW", "requirements": [], "compatibility": {"minimum_nexora": "2.4.0"},
+        "security": {"sandbox": True, "secret_access": False, "docker_access": False},
+    }
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    try:
+        response, data = request(connection, "POST", "/api/v1/marketplace/publish", key=read_key, body={"publisher_id": publisher["id"], "manifest": manifest})
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
+        response, data = request(connection, "POST", "/api/v1/marketplace/publish", key=key, body={"publisher_id": publisher["id"], "manifest": manifest})
+        assert response.status == 201 and data["id"] == "api-market-skill"
+        response, data = request(connection, "GET", "/api/v1/marketplace?type=SKILL", key=key)
+        assert response.status == 200 and data["items"][0]["id"] == "api-market-skill"
+        response, data = request(connection, "GET", "/api/v1/marketplace/api-market-skill", key=key)
+        assert response.status == 200 and data["manifest"]["security"]["sandbox"] is True
+        response, data = request(connection, "POST", "/api/v1/marketplace/api-market-skill/install", key=key, body={"workspace_id": workspace["id"]})
+        assert response.status == 201 and data["status"] == "ACTIVE"
+        response, data = request(connection, "POST", "/api/v1/marketplace/api-market-skill/install", key=read_key, body={"workspace_id": workspace["id"]})
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path: Path) -> None:
     server = create_server(config(tmp_path), use_tls=False)
     app = server.RequestHandlerClass.app

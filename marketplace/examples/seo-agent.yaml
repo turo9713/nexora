@@ -1,0 +1,15 @@
+id: seo-agent
+name: SEO Agent
+type: AGENT
+version: 1.0.0
+author: Nexora Community
+description: Creates reviewable SEO recommendations without publishing.
+category: marketing
+permissions:
+  filesystem: {scope: workspace}
+  network: {mode: none}
+  shell: false
+risk_level: LOW
+requirements: []
+compatibility: {minimum_nexora: 2.4.0}
+security: {sandbox: true, secret_access: false, docker_access: false}

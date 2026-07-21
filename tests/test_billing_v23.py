@@ -172,6 +172,7 @@ def test_migration_007_backup_integrity_and_rollback(tmp_path: Path) -> None:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 6
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("SELECT COUNT(*) FROM organizations").fetchone()[0] == 0
+    database.rollback(8)
     database.rollback(7)
     assert database.schema_version() == 6
     with sqlite3.connect(database.path) as connection:
