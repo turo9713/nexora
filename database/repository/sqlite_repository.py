@@ -55,6 +55,7 @@ class SQLiteRepository:
             (5, self.migrations_root / "005_community.sql"),
             (6, self.migrations_root / "006_teams.sql"),
             (7, self.migrations_root / "007_cloud_billing.sql"),
+            (8, self.migrations_root / "008_marketplace.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -64,8 +65,8 @@ class SQLiteRepository:
                     applied = None
                 if applied is not None:
                     continue
-                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7} else None
-                if version in {6, 7} and current_version == version - 1:
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8} else None
+                if version in {6, 7, 8} and current_version == version - 1:
                     connection.commit()
                     self._backup_before_version(connection, version)
                 connection.executescript(path.read_text(encoding="utf-8"))
@@ -73,7 +74,7 @@ class SQLiteRepository:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
-                if version in {6, 7} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                if version in {6, 7, 8} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError(f"migration {version:03d} integrity check failed")
         self._secure_database()
         return self.schema_version()
@@ -102,13 +103,13 @@ class SQLiteRepository:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def rollback(self, version: int = 7) -> None:
-        if version not in {1, 2, 3, 4, 5, 6, 7}:
+    def rollback(self, version: int = 8) -> None:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -240,7 +241,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 7
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 8
         except sqlite3.Error:
             return False
 
@@ -1265,4 +1266,170 @@ class SQLiteRepository:
                 "SELECT id,workspace_id,resource_type,status,created_at,updated_at FROM cloud_resources WHERE organization_id=? ORDER BY created_at",
                 (organization_id,),
             ).fetchall()
+        return [dict(row) for row in rows]
+
+    # Marketplace v2.4 repositories. Package content is declarative JSON only.
+    def create_publisher(self, value: dict[str, Any]) -> dict[str, Any]:
+        user_id = self.ensure_user(str(value["owner"]))
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO publishers(id,user_id,display_name,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (value["id"], user_id, value["display_name"], value["status"], value["created_at"], value["updated_at"]),
+            )
+        self._secure_database()
+        return self.get_publisher(str(value["id"])) or {}
+
+    def get_publisher(self, publisher_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT p.id,p.display_name,p.status,p.created_at,p.updated_at,u.external_hash owner FROM publishers p JOIN users u ON u.id=p.user_id WHERE p.id=?",
+                (publisher_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def list_publishers(self, owner: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT p.id,p.display_name,p.status,p.created_at,p.updated_at FROM publishers p"
+        values: tuple[Any, ...] = ()
+        if owner is not None:
+            sql += " JOIN users u ON u.id=p.user_id WHERE u.external_hash=?"
+            values = (owner,)
+        sql += " ORDER BY p.created_at DESC"
+        with self._connect() as connection:
+            rows = connection.execute(sql, values).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_publisher_status(self, publisher_id: str, status: str) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE publishers SET status=?,updated_at=? WHERE id=?", (status, utc_now(), publisher_id))
+        self._secure_database()
+
+    def insert_marketplace_item(self, item: dict[str, Any], package: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO marketplace_items(id,type,name,description,current_version,author_id,category,risk_level,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (item["id"], item["type"], item["name"], item["description"], item["current_version"], item["author_id"], item["category"], item["risk_level"], item["status"], item["created_at"], item["updated_at"]),
+            )
+            connection.execute(
+                "INSERT INTO packages(id,item_id,version,manifest,checksum,signature,signature_status,validation_status,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (package["id"], package["item_id"], package["version"], package["manifest"], package["checksum"], package.get("signature"), package["signature_status"], package["validation_status"], package["created_at"]),
+            )
+        self._secure_database()
+
+    def add_marketplace_package_version(self, item: dict[str, Any], package: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO packages(id,item_id,version,manifest,checksum,signature,signature_status,validation_status,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (package["id"], package["item_id"], package["version"], package["manifest"], package["checksum"], package.get("signature"), package["signature_status"], package["validation_status"], package["created_at"]),
+            )
+            connection.execute(
+                "UPDATE marketplace_items SET name=?,description=?,current_version=?,category=?,risk_level=?,status='PUBLISHED',updated_at=? WHERE id=? AND author_id=?",
+                (item["name"], item["description"], item["current_version"], item["category"], item["risk_level"], item["updated_at"], item["id"], item["author_id"]),
+            )
+        self._secure_database()
+
+    def list_marketplace_versions(self, item_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id,version,checksum,signature_status,validation_status,created_at FROM packages WHERE item_id=? ORDER BY created_at DESC", (item_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_marketplace_item_status(self, item_id: str, status: str) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE marketplace_items SET status=?,updated_at=? WHERE id=?", (status, utc_now(), item_id))
+        self._secure_database()
+
+    def list_marketplace_items(self, *, search: str | None = None, category: str | None = None, item_type: str | None = None, author_id: str | None = None, published_only: bool = True, limit: int = 100) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if published_only:
+            clauses.append("m.status='PUBLISHED'")
+        if search:
+            clauses.append("(lower(m.name) LIKE ? OR lower(m.description) LIKE ?)")
+            term = f"%{search.casefold()[:100]}%"
+            values.extend((term, term))
+        if category:
+            clauses.append("m.category=?")
+            values.append(category[:64])
+        if item_type:
+            clauses.append("m.type=?")
+            values.append(item_type.upper())
+        if author_id:
+            clauses.append("m.author_id=?")
+            values.append(author_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(max(1, min(200, int(limit))))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT m.id,m.type,m.name,m.description,m.current_version version,m.author_id,p.display_name author,m.category,m.risk_level,m.status,m.created_at,m.updated_at,"
+                "(SELECT COUNT(*) FROM marketplace_installations i WHERE i.item_id=m.id AND i.status='ACTIVE') downloads "
+                "FROM marketplace_items m JOIN publishers p ON p.id=m.author_id" + where + " ORDER BY m.name LIMIT ?",
+                tuple(values),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_marketplace_item(self, item_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT m.id,m.type,m.name,m.description,m.current_version version,m.author_id,p.display_name author,m.category,m.risk_level,m.status,m.created_at,m.updated_at,"
+                "(SELECT COUNT(*) FROM marketplace_installations i WHERE i.item_id=m.id AND i.status='ACTIVE') downloads "
+                "FROM marketplace_items m JOIN publishers p ON p.id=m.author_id WHERE m.id=?",
+                (item_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def get_marketplace_package(self, item_id: str, version: str | None = None) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT p.* FROM packages p JOIN marketplace_items m ON m.id=p.item_id WHERE p.item_id=? AND p.version=COALESCE(?,m.current_version)",
+                (item_id, version),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def add_marketplace_installation(self, value: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO marketplace_installations(id,workspace_id,item_id,package_id,version,installed_by,status,approval_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (value["id"], value["workspace_id"], value["item_id"], value["package_id"], value["version"], value["installed_by"], value["status"], value.get("approval_id"), value["created_at"], value["updated_at"]),
+            )
+        self._secure_database()
+        return self.get_marketplace_installation(value["workspace_id"], value["item_id"], value["version"]) or {}
+
+    def get_marketplace_installation(self, workspace_id: str, item_id: str, version: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT id,workspace_id,item_id,package_id,version,status,approval_id,created_at,updated_at FROM marketplace_installations WHERE workspace_id=? AND item_id=? AND version=?", (workspace_id,item_id,version)).fetchone()
+        return None if row is None else dict(row)
+
+    def list_marketplace_installations(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id,item_id,version,status,created_at,updated_at FROM marketplace_installations WHERE workspace_id=? ORDER BY updated_at DESC", (workspace_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def rollback_marketplace_installation(self, workspace_id: str, item_id: str, version: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute("UPDATE marketplace_installations SET status='ROLLED_BACK',updated_at=? WHERE workspace_id=? AND item_id=? AND version=? AND status='ACTIVE'", (utc_now(),workspace_id,item_id,version))
+        self._secure_database()
+        return cursor.rowcount == 1
+
+    def add_marketplace_review(self, value: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT INTO reviews(id,item_id,package_id,workspace_id,user_id,rating,comment,created_at) VALUES(?,?,?,?,?,?,?,?)", (value["id"],value["item_id"],value["package_id"],value["workspace_id"],value["user_id"],value["rating"],value["comment"],value["created_at"]))
+        self._secure_database()
+
+    def list_marketplace_reviews(self, item_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT r.id,r.rating,r.comment,r.created_at,p.version FROM reviews r JOIN packages p ON p.id=r.package_id WHERE r.item_id=? ORDER BY r.created_at DESC", (item_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_marketplace_license(self, value: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT INTO licenses(id,item_id,package_id,owner,type,status,created_at) VALUES(?,?,?,?,?,?,?)", (value["id"],value["item_id"],value["package_id"],value["owner"],value["type"],value["status"],value["created_at"]))
+        self._secure_database()
+
+    def add_marketplace_event(self, value: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute("INSERT INTO marketplace_events(id,item_id,publisher_id,event,result,metadata,created_at) VALUES(?,?,?,?,?,?,?)", (value["id"],value.get("item_id"),value.get("publisher_id"),value["event"],value["result"],json.dumps(value.get("metadata",{}),ensure_ascii=False,separators=(",",":")),value["created_at"]))
+        self._secure_database()
+
+    def list_marketplace_events(self, item_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id,event,result,metadata,created_at FROM marketplace_events WHERE item_id=? ORDER BY created_at DESC LIMIT ?", (item_id,max(1,min(200,int(limit))))).fetchall()
         return [dict(row) for row in rows]

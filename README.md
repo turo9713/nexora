@@ -3,9 +3,8 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 2.3 adds SaaS-ready plans, subscriptions, usage metering, enforceable
-tenant limits, an approval-gated admin console, and metadata-only cloud
-provisioning. The repository contains the open-source
+Nexora 2.4 adds a security-reviewed Marketplace foundation for declarative,
+versioned Agents, Skills, Templates, and Integrations. The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -28,6 +27,8 @@ deliberately outside the public boundary.
 - Read-only tenant billing views with Free, Pro, Team, and Enterprise plans.
 - Server-side usage metering and pre-mutation limits enforcement.
 - Approval-only plan changes and organization blocking; no payment processor.
+- Verified publishers, checksum-protected packages, tenant-isolated installs,
+  reviews, and community-license metadata with no automatic code execution.
 
 ## Architecture
 
@@ -123,6 +124,18 @@ creates tenant metadata only; it allocates no external infrastructure and makes
 no charge. See [billing](docs/billing.md), [plans](docs/plans.md),
 [usage](docs/usage.md), and [cloud architecture](docs/cloud-architecture.md).
 
+## Marketplace
+
+The authenticated Dashboard exposes `/marketplace`, `/my-items`, and
+`/publisher`. Scoped clients use `GET /api/v1/marketplace`,
+`GET /api/v1/marketplace/{id}`, `POST /api/v1/marketplace/{id}/install`, and
+`POST /api/v1/marketplace/publish`. Packages contain validated manifests only;
+Nexora neither downloads nor executes publisher code. Medium/high-risk installs
+and integrations require the existing one-time approval flow. See
+[Marketplace](docs/marketplace.md), [publishing](docs/publishing.md),
+[package format](docs/package-format.md), and
+[Marketplace security](docs/security-marketplace.md).
+
 ## Security
 
 Nexora is deny-by-default. Agents and skills cannot grant themselves new tools,
@@ -167,8 +180,8 @@ and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Roadmap
 
-- **v2.1:** more reviewed integrations.
-- **v2.5:** teams and role-based collaboration.
+- **v2.5:** expanded publisher trust and signed package provenance.
+- **v2.7:** curated integration bundles.
 - **v3.0:** optional managed cloud platform while preserving self-hosting.
 
 ## Release and rollback

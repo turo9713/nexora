@@ -198,3 +198,30 @@ def test_api_key_and_webhook_lifecycle_require_approval(dashboard_factory) -> No
     assert hook_approved["one_time_secret"]
     assert app.api.list_webhooks()["items"][0]["status"] == "ACTIVE"
     assert "secret" not in json.dumps(app.api.list_webhooks()).casefold()
+
+
+def test_marketplace_dashboard_publish_install_and_approval(dashboard_factory) -> None:
+    app, _ = dashboard_factory()
+    registered = app.api.register_publisher({"display_name": "Nexora Community"}, "publisher-session")
+    assert registered["publisher"]["status"] == "PENDING"
+    verified = app.api.decide_approval(registered["approval_id"], "approve")
+    assert verified["execution"] == "COMPLETED"
+    publisher_id = registered["publisher"]["id"]
+    manifest = {
+        "id": "dashboard-template", "name": "Dashboard Template", "type": "TEMPLATE", "version": "1.0.0",
+        "author": "Nexora Community", "description": "Reviewed template", "category": "templates",
+        "permissions": {"filesystem": {"scope": "workspace"}, "network": {"mode": "none"}, "shell": False},
+        "risk_level": "MEDIUM", "requirements": [], "compatibility": {"minimum_nexora": "2.4.0"},
+        "security": {"sandbox": True, "secret_access": False, "docker_access": False},
+    }
+    published = app.api.publish_marketplace({"publisher_id": publisher_id, "manifest": manifest})
+    assert published["status"] == "PUBLISHED"
+    assert app.api.marketplace_catalog({"type": "TEMPLATE"})["items"][0]["id"] == "dashboard-template"
+    workspace = app.api.list_workspaces({})["items"][0]
+    requested = app.api.request_marketplace_install("dashboard-template", {"workspace_id": workspace["id"]}, "install-session")
+    assert requested["status"] == "WAITING_APPROVAL"
+    installed = app.api.decide_approval(requested["approval_id"], "approve")
+    assert installed["execution"] == "COMPLETED"
+    records = app.api.marketplace.installations(NAMESPACE, workspace["id"])
+    assert records[0]["item_id"] == "dashboard-template" and records[0]["status"] == "ACTIVE"
+    assert app.api.marketplace_my_items()["items"][0]["id"] == "dashboard-template"

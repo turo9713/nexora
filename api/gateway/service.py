@@ -9,6 +9,7 @@ from nexora.billing import BillingAccessDenied, BillingLimitReached
 from nexora.security.audit.redaction import redact_text
 from nexora.skills import SkillRegistryError
 from nexora.templates import TemplateApprovalRequired, TemplateRegistryError
+from nexora.marketplace import MarketplaceError
 
 
 class APIGatewayError(RuntimeError):
@@ -22,7 +23,7 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
@@ -30,6 +31,7 @@ class APIGateway:
         self.playground = playground
         self.teams = teams
         self.billing = billing
+        self.marketplace = marketplace
         self.policy = policy
         self.tasks = tasks
         self.approvals = approvals
@@ -213,6 +215,53 @@ class APIGateway:
 
     def list_templates(self) -> dict[str, Any]:
         return {"items": self.templates.list()}
+
+    def list_marketplace(self, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(100, int(query.get("limit", "50"))))
+        except ValueError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
+        return {"items": self.marketplace.catalog(search=query.get("search") or None, category=query.get("category") or None, item_type=query.get("type") or None, limit=limit)}
+
+    def get_marketplace_item(self, item_id: str) -> dict[str, Any]:
+        try:
+            return self.marketplace.item(item_id, include_manifest=True)
+        except MarketplaceError as exc:
+            raise APIGatewayError(404, "MARKETPLACE_ITEM_NOT_FOUND", "Marketplace item not found or unavailable") from exc
+
+    def install_marketplace_item(self, principal: APIKeyPrincipal, item_id: str, value: dict[str, Any], request_id: str) -> dict[str, Any]:
+        workspace_id = str(value.get("workspace_id") or "")
+        version = str(value.get("version") or "") or None
+        approval_id = str(value.get("approval_id") or "") or None
+        if not workspace_id:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "workspace_id is required")
+        try:
+            return self.marketplace.install(principal.owner, workspace_id, item_id, version=version, approval_id=approval_id)
+        except MarketplaceError as exc:
+            if exc.code == "MARKETPLACE_APPROVAL_REQUIRED":
+                try:
+                    item = self.marketplace.item(item_id)
+                except MarketplaceError as inner:
+                    raise APIGatewayError(404, "MARKETPLACE_ITEM_NOT_FOUND", "Marketplace item not found or unavailable") from inner
+                selected_version = version or item["version"]
+                task = self.tasks.create(principal.owner, f"Install marketplace item {item_id}", f"api-{request_id[:24]}")
+                action = f"marketplace:install:{workspace_id}:{item_id}:{selected_version}"
+                approval = self.approvals.create(principal.owner, task["task_id"], f"api-{request_id[:24]}", action, f"Install {item_id} {selected_version}", "Marketplace permission review is required before activation.")
+                self.tasks.transition(principal.owner, task["task_id"], "WAITING_APPROVAL", event="MARKETPLACE_APPROVAL_REQUIRED")
+                return {"item_id": item_id, "status": "WAITING_APPROVAL", "task_id": task["task_id"], "approval_id": approval["approval_id"]}
+            status = 404 if exc.code in {"MARKETPLACE_ITEM_NOT_FOUND", "MARKETPLACE_RESOURCE_NOT_FOUND"} else 403
+            raise APIGatewayError(status, exc.code, "Marketplace operation denied or unavailable") from exc
+
+    def publish_marketplace_item(self, principal: APIKeyPrincipal, value: dict[str, Any]) -> dict[str, Any]:
+        publisher_id = str(value.get("publisher_id") or "")
+        manifest = value.get("manifest")
+        if not publisher_id or not isinstance(manifest, dict):
+            raise APIGatewayError(400, "VALIDATION_ERROR", "publisher_id and manifest are required")
+        try:
+            return self.marketplace.publish(principal.owner, publisher_id, manifest, str(value.get("signature")) if value.get("signature") else None)
+        except MarketplaceError as exc:
+            status = 400 if "INVALID" in exc.code or "FORBIDDEN" in exc.code else 403
+            raise APIGatewayError(status, exc.code, "Marketplace package rejected") from exc
 
     def get_template(self, template_id: str) -> dict[str, Any]:
         try:

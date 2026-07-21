@@ -2,6 +2,21 @@
 
 All notable changes follow Semantic Versioning.
 
+## [2.4.0] - 2026-07-21
+
+### Added
+
+- Declarative Marketplace catalog for versioned Agents, Skills, Templates, and Integrations.
+- Verified publisher workflow, package checksums, checksum-attestation foundation, search, categories, installs, reviews, community licenses, and immutable marketplace events.
+- Authenticated Dashboard pages and scoped `/api/v1/marketplace` endpoints.
+- Reversible SQLite migration 008 with automatic pre-migration backup and integrity validation.
+
+### Security
+
+- Packages are metadata-only: executable payloads, shell, root, secrets, Docker, privileged, and production access are rejected.
+- Installation revalidates the canonical manifest and checksum, passes workspace RBAC and Policy Engine checks, and requires a one-time approval for medium/high-risk packages and all integrations.
+- Cross-tenant installation and review access fail closed; no payment provider or automatic external code download is present.
+
 ## [2.3.0] - 2026-07-21
 
 ### Added

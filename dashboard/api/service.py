@@ -21,6 +21,7 @@ from nexora.metrics import MetricsService
 from nexora.playground import PlaygroundService
 from nexora.templates import TemplateApprovalRequired, TemplateRegistry, TemplateRegistryError
 from nexora.webhooks import WebhookService, WebhookValidationError
+from nexora.marketplace import MarketplaceError, MarketplaceService
 
 
 TASK_STATUSES = {
@@ -59,6 +60,7 @@ class DashboardAPI:
         teams: TeamService | None = None,
         billing: BillingFoundation | None = None,
         admin_console: AdminConsole | None = None,
+        marketplace: MarketplaceService | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -77,6 +79,7 @@ class DashboardAPI:
         self.teams = teams
         self.billing = billing
         self.admin_console = admin_console
+        self.marketplace = marketplace
 
     def health(self) -> dict[str, Any]:
         status = self._safe_status()
@@ -93,6 +96,7 @@ class DashboardAPI:
                 "workspaces": len(self.teams.list_workspaces(self.namespace)) if self.teams else 0,
             },
             "billing": "OK" if self.billing is not None else "WARNING",
+            "marketplace": "OK" if self.marketplace is not None and self.database.schema_version() >= 8 else "ERROR",
             "api": self._health_value(status.get("api")),
             "gateway": self._health_value(status.get("openclaw")),
             "tasks": self.database.task_overview(self.namespace),
@@ -249,6 +253,51 @@ class DashboardAPI:
         organization_id = self._tenant_organization(query)
         assert self.billing is not None
         return self.billing.limits(self.namespace, organization_id)
+
+    def marketplace_catalog(self, query: dict[str, str]) -> dict[str, Any]:
+        service = self._marketplace()
+        return {"items": service.catalog(search=query.get("search") or None, category=query.get("category") or None, item_type=query.get("type") or None)}
+
+    def marketplace_item(self, item_id: str) -> dict[str, Any]:
+        try:
+            return self._marketplace().item(item_id, include_manifest=True)
+        except MarketplaceError as exc:
+            raise DashboardAPIError(404, "MARKETPLACE_ITEM_NOT_FOUND", "Marketplace item not found or unavailable") from exc
+
+    def marketplace_my_items(self) -> dict[str, Any]:
+        return {"items": self._marketplace().my_items(self.namespace), "publishers": self.database.list_publishers(self.namespace)}
+
+    def register_publisher(self, value: dict[str, Any], session_id: str) -> dict[str, Any]:
+        try:
+            publisher = self._marketplace().register_publisher(self.namespace, str(value.get("display_name") or ""))
+        except MarketplaceError as exc:
+            raise DashboardAPIError(400, exc.code, "Publisher registration failed") from exc
+        approval = self._management_approval(session_id, f"marketplace:publisher_verify:{publisher['id']}", f"Verify publisher {publisher['display_name']}", "Publisher verification grants package submission rights; code execution remains forbidden.")
+        return {"publisher": publisher, "status": "WAITING_APPROVAL", **approval}
+
+    def publish_marketplace(self, value: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(value.get("manifest"), dict):
+            raise DashboardAPIError(400, "MARKETPLACE_MANIFEST_INVALID", "Manifest is required")
+        try:
+            return self._marketplace().publish(self.namespace, str(value.get("publisher_id") or ""), value["manifest"], str(value["signature"]) if value.get("signature") else None)
+        except MarketplaceError as exc:
+            raise DashboardAPIError(400 if "INVALID" in exc.code or "FORBIDDEN" in exc.code else 403, exc.code, "Marketplace package rejected") from exc
+
+    def request_marketplace_install(self, item_id: str, value: dict[str, Any], session_id: str) -> dict[str, Any]:
+        workspace_id = str(value.get("workspace_id") or "")
+        version = str(value.get("version") or "") or None
+        if not workspace_id:
+            raise DashboardAPIError(400, "VALIDATION_ERROR", "workspace_id is required")
+        try:
+            return self._marketplace().install(self.namespace, workspace_id, item_id, version=version)
+        except MarketplaceError as exc:
+            if exc.code != "MARKETPLACE_APPROVAL_REQUIRED":
+                status = 404 if exc.code in {"MARKETPLACE_ITEM_NOT_FOUND", "MARKETPLACE_RESOURCE_NOT_FOUND"} else 403
+                raise DashboardAPIError(status, exc.code, "Marketplace installation denied") from exc
+            details = self.marketplace_item(item_id)
+            selected = version or details["version"]
+            approval = self._management_approval(session_id, f"marketplace:install:{workspace_id}:{item_id}:{selected}", f"Install marketplace item {item_id} {selected}", "Reviewed permissions will be activated only inside the selected workspace.")
+            return {"item_id": item_id, "workspace_id": workspace_id, "version": selected, "status": "WAITING_APPROVAL", **approval}
 
     def admin_summary(self) -> dict[str, Any]:
         if self.admin_console is None:
@@ -517,6 +566,9 @@ class DashboardAPI:
         elif action_type.startswith("billing:"):
             self._execute_billing_action(action_type, task_id, approval_id)
             execution = "COMPLETED"
+        elif action_type.startswith("marketplace:"):
+            self._execute_marketplace_action(action_type, task_id, approval_id)
+            execution = "COMPLETED"
         else:
             execution = "TELEGRAM_RUNTIME_PENDING"
         self.audit.record("APPROVAL_DECISION", source="dashboard_api", action_result="APPROVED", approval_id=approval_id, task_id=task_id)
@@ -545,6 +597,29 @@ class DashboardAPI:
 
     def audit_access(self, path: str, result: str = "ALLOWED") -> None:
         self.audit.record("API_ACCESS", source="dashboard_api", action_result=result, endpoint=path[:160])
+
+    def _execute_marketplace_action(self, action_type: str, task_id: str, approval_id: str) -> None:
+        service = self._marketplace()
+        if action_type.startswith("marketplace:publisher_verify:"):
+            publisher_id = action_type.split(":", 2)[2]
+            service.verify_publisher(self.namespace, publisher_id, approval_id)
+            summary = f"Publisher {publisher_id} verified"
+        elif action_type.startswith("marketplace:install:"):
+            parts = action_type.split(":", 5)
+            if len(parts) != 5:
+                raise DashboardAPIError(409, "ACTION_INVALID", "Marketplace action is invalid")
+            _, _, workspace_id, item_id, version = parts
+            service.install(self.namespace, workspace_id, item_id, version=version, approval_id=approval_id)
+            summary = f"Marketplace item {item_id} {version} installed"
+        else:
+            raise DashboardAPIError(409, "ACTION_INVALID", "Marketplace action is invalid")
+        self.tasks.update_fields(self.namespace, task_id, pending_approval_id=None, result_summary=summary)
+        self.tasks.transition(self.namespace, task_id, "COMPLETED", event="MARKETPLACE_ACTION_COMPLETED")
+
+    def _marketplace(self) -> MarketplaceService:
+        if self.marketplace is None:
+            raise DashboardAPIError(503, "MARKETPLACE_UNAVAILABLE", "Marketplace unavailable")
+        return self.marketplace
 
     def _execute_agent_action(self, action_type: str, approval_id: str, task_id: str) -> None:
         parts = action_type.split(":", 2)
