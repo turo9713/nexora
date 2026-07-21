@@ -37,6 +37,8 @@ class DashboardPermissions:
         "admin:manage",
         "marketplace:read",
         "marketplace:manage",
+        "creator:read",
+        "creator:manage",
     }
 
     def authorize(self, session: Session | None, permission: str) -> bool:

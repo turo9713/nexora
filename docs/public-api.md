@@ -1,5 +1,14 @@
 # Nexora Public API v1
 
+## Nexora 2.5 creator endpoints
+
+- `GET /api/v1/creators/{id}` requires `creators:read` and returns a sanitized public profile.
+- `GET /api/v1/creator/packages` requires `creator:read` and returns only the API-key owner's versions.
+- `GET /api/v1/creator/analytics` requires `creator:read` and returns only the API-key owner's aggregates.
+
+Creator ownership is derived from the authenticated key and cannot be selected
+through request parameters.
+
 ## Nexora 2.4 marketplace endpoints
 
 - `GET /api/v1/marketplace` and `GET /api/v1/marketplace/{id}` require `marketplace:read`.

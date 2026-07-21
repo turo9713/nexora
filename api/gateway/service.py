@@ -10,6 +10,7 @@ from nexora.security.audit.redaction import redact_text
 from nexora.skills import SkillRegistryError
 from nexora.templates import TemplateApprovalRequired, TemplateRegistryError
 from nexora.marketplace import MarketplaceError
+from nexora.creators import CreatorError
 
 
 class APIGatewayError(RuntimeError):
@@ -23,7 +24,7 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
@@ -32,6 +33,7 @@ class APIGateway:
         self.teams = teams
         self.billing = billing
         self.marketplace = marketplace
+        self.creators = creators
         self.policy = policy
         self.tasks = tasks
         self.approvals = approvals
@@ -262,6 +264,24 @@ class APIGateway:
         except MarketplaceError as exc:
             status = 400 if "INVALID" in exc.code or "FORBIDDEN" in exc.code else 403
             raise APIGatewayError(status, exc.code, "Marketplace package rejected") from exc
+
+    def creator_profile(self, creator_id: str) -> dict[str, Any]:
+        try:
+            return self.creators.profile(creator_id)
+        except CreatorError as exc:
+            raise APIGatewayError(404, "CREATOR_NOT_FOUND", "Creator not found or unavailable") from exc
+
+    def creator_packages(self, principal: APIKeyPrincipal) -> dict[str, Any]:
+        try:
+            return {"items": self.creators.packages(principal.owner)}
+        except CreatorError as exc:
+            raise APIGatewayError(404, "CREATOR_NOT_FOUND", "Creator not found or unavailable") from exc
+
+    def creator_analytics(self, principal: APIKeyPrincipal) -> dict[str, Any]:
+        try:
+            return self.creators.analytics(principal.owner)
+        except CreatorError as exc:
+            raise APIGatewayError(404, "CREATOR_NOT_FOUND", "Creator not found or unavailable") from exc
 
     def get_template(self, template_id: str) -> dict[str, Any]:
         try:

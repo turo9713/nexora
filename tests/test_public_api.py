@@ -133,6 +133,39 @@ def test_marketplace_http_api_scopes_publish_catalog_and_install(tmp_path: Path)
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_creator_http_api_scopes_and_owner_isolation(tmp_path: Path) -> None:
+    server = create_server(config(tmp_path), use_tls=False)
+    app = server.RequestHandlerClass.app
+    profile = app.gateway.creators.create_profile(OWNER, "API Creator", "Safe profile")
+    _, public_key = issue(app, ["creators:read"], "creator-public")
+    _, owner_key = issue(app, ["creators:read", "creator:read"], "creator-owner")
+    foreign = "f" * 32
+    foreign_key_id = app.keys.request_key(foreign, "foreign", ["creator:read"], "2099-01-01T00:00:00+00:00")
+    app.gateway.database.attach_api_key_approval(foreign_key_id, "APR-FOREIGN1")
+    foreign_key = app.keys.activate(foreign_key_id, "APR-FOREIGN1")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    try:
+        response, data = request(connection, "GET", f"/api/v1/creators/{profile['id']}", key=public_key)
+        assert response.status == 200 and data["display_name"] == "API Creator" and "owner" not in data
+        response, data = request(connection, "GET", "/api/v1/creator/packages", key=public_key)
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
+        response, data = request(connection, "GET", "/api/v1/creator/packages", key=owner_key)
+        assert response.status == 200 and data["items"] == []
+        response, data = request(connection, "GET", "/api/v1/creator/analytics", key=owner_key)
+        assert response.status == 200 and data["summary"]["packages"] == 0
+        response, data = request(connection, "GET", "/api/v1/creator/analytics", key=foreign_key)
+        assert response.status == 404 and data["error"] == "CREATOR_NOT_FOUND"
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path: Path) -> None:
     server = create_server(config(tmp_path), use_tls=False)
     app = server.RequestHandlerClass.app

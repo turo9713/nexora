@@ -38,6 +38,7 @@ from nexora.playground import PlaygroundService
 from nexora.templates import TemplateRegistry
 from nexora.webhooks import WebhookService
 from nexora.marketplace import MarketplaceService
+from nexora.creators import CreatorService
 
 
 COOKIE_NAME = "__Host-nexora_session"
@@ -142,7 +143,8 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     billing = BillingFoundation(database, audit)
     admin_console = AdminConsole(billing, namespace, policy)
     marketplace = MarketplaceService(database, teams, policy, audit)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace)
+    creators = CreatorService(database, marketplace, teams, policy, audit, administrator=namespace)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -166,7 +168,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/2.4"
+    server_version = "NexoraDashboard/2.5"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -216,6 +218,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             plan_change_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/plan", path)
             organization_status_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/(block|unblock)", path)
             marketplace_install_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})/install", path)
+            creator_action_match = re.fullmatch(r"/api/creator/packages/([a-z0-9][a-z0-9-]{1,62})/([0-9]+\.[0-9]+\.[0-9]+)/(submit|validate|publish)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
             if agent_match:
                 agent_id = agent_match.group(1)
@@ -292,6 +295,22 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.app.api.audit_access(path)
                 self._json(201, response)
                 return
+            if path == "/api/creator/profile":
+                response = self.app.api.create_creator_profile(body)
+                self.app.api.audit_access(path)
+                self._json(201, response)
+                return
+            if path == "/api/creator/packages":
+                response = self.app.api.create_creator_draft(body)
+                self.app.api.audit_access(path)
+                self._json(201, response)
+                return
+            if creator_action_match:
+                package_id, version, action = creator_action_match.groups()
+                response = self.app.api.creator_version_action(package_id, version, action)
+                self.app.api.audit_access(path)
+                self._json(200, response)
+                return
             if marketplace_install_match:
                 response = self.app.api.request_marketplace_install(marketplace_install_match.group(1), body, session.session_id)
                 self.app.api.audit_access(path)
@@ -346,6 +365,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.marketplace_my_items()
             elif path == "/api/publisher":
                 response = self.app.api.marketplace_my_items()
+            elif path == "/api/creator":
+                response = self.app.api.creator_dashboard()
             elif path == "/api/approvals":
                 response = self.app.api.list_approvals(query)
             elif path == "/api/audit":
@@ -447,6 +468,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "marketplace:read"
             if path in {"/api/my-items", "/api/publisher"}:
                 return "marketplace:read"
+            if path == "/api/creator":
+                return "creator:read"
             if path == "/api/approvals":
                 return "approvals:read"
             if path == "/api/audit":
@@ -478,6 +501,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "admin:manage"
             if path in {"/api/publisher/register", "/api/marketplace/publish"} or re.fullmatch(r"/api/marketplace/[a-z0-9][a-z0-9-]{1,62}/install", path):
                 return "marketplace:manage"
+            if path in {"/api/creator/profile", "/api/creator/packages"} or re.fullmatch(r"/api/creator/packages/[a-z0-9][a-z0-9-]{1,62}/[0-9]+\.[0-9]+\.[0-9]+/(submit|validate|publish)", path):
+                return "creator:manage"
         return None
 
     def _json_body(self) -> dict[str, Any] | None:
@@ -515,7 +540,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})

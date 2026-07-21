@@ -12,3 +12,12 @@ resolved from the authenticated internal namespace and publisher record.
 
 Do not submit source code, binaries, install scripts, URLs to dependency
 installers, secrets, credentials, environment values, or production config.
+
+## Creator package versions
+
+Creators prepare releases through `DRAFT`, `SUBMITTED`, `VALIDATING`, and
+`APPROVED` before publication. Versions follow semantic versioning and retain a
+canonical manifest checksum, changelog, and compatibility declaration.
+Published content is immutable. A newer version creates a new record; it does
+not modify an old release. Archive and rollback require an exact one-time
+approval and change only catalog availability/current-version metadata.
