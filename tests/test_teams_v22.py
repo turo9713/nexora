@@ -163,6 +163,7 @@ def test_migration_006_integrity_and_rollback_preserve_v21_data(tmp_path: Path) 
     with sqlite3.connect(database.path) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("SELECT COUNT(*) FROM templates").fetchone()[0] == 0
+    database.rollback(12)
     database.rollback(11)
     database.rollback(10)
     database.rollback(9)

@@ -27,7 +27,7 @@ OWNER, OUTSIDER = "a" * 32, "b" * 32
 
 def platform(tmp_path: Path):
     database = SQLiteRepository(tmp_path / "state" / "nexora.sqlite3")
-    assert database.migrate() == 11
+    assert database.migrate() == 12
     registry = AgentRegistry(PROJECT / "agents").load()
     policy = PolicyEngine(registry, PROJECT, status_resolver=database.agent_enabled)
     audit_repository = AuditRepository(tmp_path / "audit")
@@ -120,8 +120,9 @@ def test_marketplace_agent_packages_support_teams_and_departments() -> None:
 
 def test_migration_010_backup_integrity_and_rollback(tmp_path: Path) -> None:
     database = SQLiteRepository(tmp_path / "state" / "nexora.sqlite3")
-    assert database.migrate() == 11 and database.check()
+    assert database.migrate() == 12 and database.check()
     assert database.path.with_suffix(database.path.suffix + ".pre-v10.backup").is_file()
+    database.rollback(12)
     database.rollback(11)
     database.rollback(10)
     assert database.schema_version() == 9

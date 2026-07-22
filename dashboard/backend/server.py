@@ -42,6 +42,7 @@ from nexora.marketplace import MarketplaceService
 from nexora.creators import CreatorService
 from nexora.dashboard.runtime import DashboardTaskRuntime, build_openclaw_orchestrator
 from nexora.operations import OperationsService
+from nexora.enterprise import EnterpriseService
 
 
 COOKIE_NAME = "__Host-nexora_session"
@@ -153,6 +154,7 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     creators = CreatorService(database, marketplace, teams, policy, audit, administrator=namespace)
     ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_read_secret(config.agent_memory_key_file, 32))
     operations = OperationsService(database, teams, registry, billing)
+    enterprise = EnterpriseService(database, teams, policy, audit, registry, config.state_root)
     task_runtime = None
     if config.gateway_token_file.is_file() and not config.gateway_token_file.is_symlink():
         orchestrator = build_openclaw_orchestrator(
@@ -162,7 +164,7 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
             config.gateway_timeout_seconds,
         )
         task_runtime = DashboardTaskRuntime(orchestrator, tasks, approvals, audit, policy, config.state_root, events)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -186,7 +188,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/3.4"
+    server_version = "NexoraDashboard/3.5"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -379,6 +381,22 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.agent_status_center(query)
             elif path == "/api/operations/analytics":
                 response = self.app.api.operations_analytics(query)
+            elif path == "/api/enterprise/security-center":
+                response = self.app.api.enterprise_security_center(query)
+            elif path == "/api/enterprise/policies":
+                response = self.app.api.enterprise_policies(query)
+            elif path == "/api/enterprise/security-events":
+                response = self.app.api.enterprise_security_events(query)
+            elif path == "/api/enterprise/sla":
+                response = self.app.api.enterprise_sla(query)
+            elif path == "/api/enterprise/storage-health":
+                response = self.app.api.enterprise_storage_health(query)
+            elif path == "/api/enterprise/deployment-profiles":
+                response = self.app.api.enterprise_deployment_profiles(query)
+            elif path == "/api/enterprise/sso":
+                response = self.app.api.enterprise_sso(query)
+            elif path == "/api/enterprise/compliance":
+                response = self.app.api.enterprise_compliance(query)
             elif path == "/api/tasks":
                 response = self.app.api.list_tasks(query)
             elif path == "/api/agents":
@@ -543,6 +561,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "health:read"
             if path in {"/api/dashboard", "/api/activity", "/api/workspace-overview", "/api/operations/analytics", "/api/realtime/tasks"}:
                 return "operations:read"
+            if path.startswith("/api/enterprise/"):
+                return "enterprise:read"
             if path == "/api/notifications":
                 return "notifications:read"
             if path == "/api/agents/status":
@@ -655,7 +675,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/home", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/home", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations", "/security-center", "/policies", "/sla", "/storage-health", "/enterprise")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})

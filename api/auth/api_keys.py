@@ -39,6 +39,7 @@ API_SCOPES = {
     "creator:read",
     "agent_ecosystem:read",
     "agent_ecosystem:manage",
+    "enterprise:read",
 }
 KEY_PATTERN = re.compile(r"^nx_live_([a-f0-9]{12})_([A-Za-z0-9_-]{32,})$")
 

@@ -23,7 +23,7 @@ FOREIGN = "f" * 32
 
 def platform(tmp_path: Path):
     database = SQLiteRepository(tmp_path / "database" / "nexora.sqlite3")
-    assert database.migrate() == 11
+    assert database.migrate() == 12
     registry = AgentRegistry(PROJECT / "agents").load()
     audit = AuditService(AuditRepository(tmp_path / "audit"), database=database)
     policy = PolicyEngine(registry, PROJECT, status_resolver=database.agent_enabled)
@@ -72,6 +72,7 @@ def test_migration_011_backup_integrity_and_reversible_schema(tmp_path: Path) ->
     assert backup.is_file()
     with sqlite3.connect(backup) as connection:
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    database.rollback(12)
     database.rollback(11)
     assert database.schema_version() == 10
     with sqlite3.connect(database.path) as connection:

@@ -34,6 +34,7 @@ from nexora.webhooks import WebhookService
 from nexora.marketplace import MarketplaceService
 from nexora.creators import CreatorService
 from nexora.operations import OperationsService
+from nexora.enterprise import EnterpriseService
 
 
 MAX_BODY = 32 * 1024
@@ -76,6 +77,10 @@ ROUTES = {
     ("GET", "/api/v1/sdk"): ("agent_ecosystem:read", 60),
     ("POST", "/api/v1/webhooks"): ("webhooks:manage", 10),
     ("GET", "/api/v1/webhooks"): ("webhooks:manage", 30),
+    ("GET", "/api/v1/policies"): ("enterprise:read", 60),
+    ("GET", "/api/v1/security/events"): ("enterprise:read", 60),
+    ("GET", "/api/v1/sla"): ("enterprise:read", 60),
+    ("GET", "/api/v1/storage/health"): ("enterprise:read", 60),
 }
 
 
@@ -136,7 +141,8 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
     creators = CreatorService(database, marketplace, teams, policy, audit)
     ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_secret(config.agent_memory_key_file))
     operations = OperationsService(database, teams, agents, billing)
-    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics, ecosystem, operations)
+    enterprise = EnterpriseService(database, teams, policy, audit, agents, config.state_root)
+    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics, ecosystem, operations, enterprise)
     return PublicAPIApplication(gateway, APIKeyService(database), APIRateLimiter(), audit, metrics)
 
 
@@ -160,7 +166,7 @@ def create_server(config: PublicAPIConfig, *, use_tls: bool = True) -> Threading
 
 class PublicAPIRequestHandler(BaseHTTPRequestHandler):
     app: PublicAPIApplication
-    server_version = "NexoraAPI/3.4"
+    server_version = "NexoraAPI/3.5"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -337,6 +343,10 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
                 status = 202
             elif method == "GET" and path == "/api/v1/webhooks":
                 response = self.app.gateway.list_webhooks(principal)
+                status = 200
+            elif method == "GET" and path in {"/api/v1/policies", "/api/v1/security/events", "/api/v1/sla", "/api/v1/storage/health"}:
+                resource = {"/api/v1/policies": "policies", "/api/v1/security/events": "security_events", "/api/v1/sla": "sla", "/api/v1/storage/health": "storage_health"}[path]
+                response = self.app.gateway.enterprise_read(principal, resource, query)
                 status = 200
             else:
                 raise APIGatewayError(404, "NOT_FOUND", "Ресурс не найден")

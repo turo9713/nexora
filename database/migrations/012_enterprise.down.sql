@@ -1,0 +1,16 @@
+PRAGMA foreign_keys = OFF;
+DROP INDEX IF EXISTS idx_storage_checks_org_workspace;
+DROP INDEX IF EXISTS idx_sla_metrics_org_workspace;
+DROP INDEX IF EXISTS idx_security_events_org_created;
+DROP INDEX IF EXISTS idx_policy_versions_policy_version;
+DROP INDEX IF EXISTS idx_enterprise_policies_org_status;
+DROP TRIGGER IF EXISTS security_events_immutable_delete;
+DROP TRIGGER IF EXISTS security_events_immutable_update;
+DROP TABLE IF EXISTS deployment_profiles;
+DROP TABLE IF EXISTS storage_checks;
+DROP TABLE IF EXISTS sla_metrics;
+DROP TABLE IF EXISTS security_events;
+DROP TABLE IF EXISTS policy_versions;
+DROP TABLE IF EXISTS enterprise_policies;
+DELETE FROM schema_migrations WHERE version = 12;
+PRAGMA foreign_keys = ON;

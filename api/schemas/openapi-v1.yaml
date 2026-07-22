@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 3.4.0
+  version: 3.5.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
@@ -257,6 +257,36 @@ paths:
       operationId: publishMarketplaceItem
       responses:
         "201": {description: Declarative package validated and published}
+  /policies:
+    get:
+      operationId: listEnterprisePolicies
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Tenant-scoped policy inventory}
+        "404": {description: Workspace not found or unavailable}
+  /security/events:
+    get:
+      operationId: listEnterpriseSecurityEvents
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200}}
+      responses:
+        "200": {description: Sanitized immutable security event inventory}
+  /sla:
+    get:
+      operationId: getEnterpriseSla
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Tenant-scoped SLA metrics}
+  /storage/health:
+    get:
+      operationId: getStorageHealth
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Safe storage health summary without internal paths}
 components:
   securitySchemes:
     bearerAuth:

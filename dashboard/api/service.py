@@ -26,6 +26,7 @@ from nexora.marketplace import MarketplaceError, MarketplaceService
 from nexora.creators import CreatorError, CreatorService
 from nexora.dashboard.runtime import DashboardTaskRuntime, DashboardTaskRuntimeError
 from nexora.operations import OperationsAccessDenied, OperationsService, OperationsValidationError
+from nexora.enterprise import EnterpriseAccessDenied, EnterpriseService, EnterpriseValidationError
 
 
 TASK_STATUSES = {
@@ -69,6 +70,7 @@ class DashboardAPI:
         ecosystem: Any | None = None,
         task_runtime: DashboardTaskRuntime | None = None,
         operations: OperationsService | None = None,
+        enterprise: EnterpriseService | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -92,6 +94,7 @@ class DashboardAPI:
         self.ecosystem = ecosystem
         self.task_runtime = task_runtime
         self.operations = operations
+        self.enterprise = enterprise
         self.task_read_model = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, Any]:
@@ -152,6 +155,44 @@ class DashboardAPI:
 
     def operations_analytics(self, query: dict[str, str]) -> dict[str, Any]:
         return self._operations_call("analytics", query.get("workspace_id") or None)
+
+    def enterprise_security_center(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._enterprise_call("security_center", query)
+
+    def enterprise_policies(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._enterprise_call("list_policies", query)
+
+    def enterprise_security_events(self, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(200, int(query.get("limit", "100"))))
+        except ValueError as exc:
+            raise DashboardAPIError(400, "INVALID_FILTER", "Invalid limit") from exc
+        return self._enterprise_call("security_events", query, limit=limit)
+
+    def enterprise_sla(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._enterprise_call("sla", query)
+
+    def enterprise_storage_health(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._enterprise_call("storage_health", query)
+
+    def enterprise_deployment_profiles(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._enterprise_call("deployment_profiles", query)
+
+    def enterprise_sso(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._enterprise_call("sso_foundation", query)
+
+    def enterprise_compliance(self, query: dict[str, str]) -> dict[str, Any]:
+        return self._enterprise_call("compliance", query)
+
+    def _enterprise_call(self, method: str, query: dict[str, str], **kwargs: Any) -> dict[str, Any]:
+        if self.enterprise is None:
+            raise DashboardAPIError(503, "ENTERPRISE_UNAVAILABLE", "Enterprise layer unavailable")
+        try:
+            return getattr(self.enterprise, method)(self.namespace, query.get("workspace_id") or None, **kwargs)
+        except EnterpriseAccessDenied as exc:
+            raise DashboardAPIError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        except EnterpriseValidationError as exc:
+            raise DashboardAPIError(400, "VALIDATION_ERROR", "Invalid enterprise request") from exc
 
     def realtime_events(self, query: dict[str, str], after_event_id: str | None = None) -> dict[str, Any]:
         return self._operations_call(

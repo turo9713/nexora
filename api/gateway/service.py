@@ -14,6 +14,7 @@ from nexora.marketplace import MarketplaceError
 from nexora.creators import CreatorError
 from nexora.storage import TaskReadModel
 from nexora.operations import OperationsAccessDenied, OperationsService, OperationsValidationError
+from nexora.enterprise import EnterpriseAccessDenied, EnterpriseService, EnterpriseValidationError
 
 
 class APIGatewayError(RuntimeError):
@@ -27,7 +28,7 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None, operations: OperationsService | None = None) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None, operations: OperationsService | None = None, enterprise: EnterpriseService | None = None) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
@@ -44,6 +45,7 @@ class APIGateway:
         self.metrics = metrics
         self.ecosystem = ecosystem
         self.operations = operations
+        self.enterprise = enterprise
         self.task_reads = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, str]:
@@ -78,6 +80,25 @@ class APIGateway:
             raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
         except OperationsValidationError as exc:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid operations request") from exc
+
+    def enterprise_read(self, principal: APIKeyPrincipal, resource: str, query: dict[str, str]) -> dict[str, Any]:
+        if self.enterprise is None:
+            raise APIGatewayError(503, "ENTERPRISE_UNAVAILABLE", "Enterprise layer unavailable")
+        methods = {"policies": "list_policies", "security_events": "security_events", "sla": "sla", "storage_health": "storage_health"}
+        if resource not in methods:
+            raise APIGatewayError(404, "NOT_FOUND", "Resource unavailable")
+        kwargs: dict[str, Any] = {}
+        if resource == "security_events":
+            try:
+                kwargs["limit"] = max(1, min(200, int(query.get("limit", "100"))))
+            except ValueError as exc:
+                raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
+        try:
+            return getattr(self.enterprise, methods[resource])(principal.owner, query.get("workspace_id") or None, **kwargs)
+        except EnterpriseAccessDenied as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        except EnterpriseValidationError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid enterprise request") from exc
 
     def ecosystem_list(self, principal: APIKeyPrincipal, resource: str, query: dict[str, str]) -> dict[str, Any]:
         if self.ecosystem is None:

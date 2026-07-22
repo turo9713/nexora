@@ -59,6 +59,7 @@ class SQLiteRepository:
             (9, self.migrations_root / "009_creator_economy.sql"),
             (10, self.migrations_root / "010_agent_ecosystem.sql"),
             (11, self.migrations_root / "011_operations.sql"),
+            (12, self.migrations_root / "012_enterprise.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -68,8 +69,8 @@ class SQLiteRepository:
                     applied = None
                 if applied is not None:
                     continue
-                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10, 11} else None
-                if version in {6, 7, 8, 9, 10, 11} and current_version == version - 1:
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10, 11, 12} else None
+                if version in {6, 7, 8, 9, 10, 11, 12} and current_version == version - 1:
                     connection.commit()
                     self._backup_before_version(connection, version)
                 connection.executescript(path.read_text(encoding="utf-8"))
@@ -77,7 +78,7 @@ class SQLiteRepository:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
-                if version in {6, 7, 8, 9, 10, 11} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                if version in {6, 7, 8, 9, 10, 11, 12} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError(f"migration {version:03d} integrity check failed")
         self._secure_database()
         return self.schema_version()
@@ -106,13 +107,13 @@ class SQLiteRepository:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def rollback(self, version: int = 11) -> None:
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}:
+    def rollback(self, version: int = 12) -> None:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem", 11: "operations"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem", 11: "operations", 12: "enterprise"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -318,7 +319,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 11
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 12
         except sqlite3.Error:
             return False
 
@@ -1944,3 +1945,122 @@ class SQLiteRepository:
         with self._connect() as connection:
             row=connection.execute("SELECT r.id,r.item_id,r.package_id,r.workspace_id,r.user_id,p.version,(SELECT COALESCE(SUM(v.vote),0) FROM review_votes v WHERE v.review_id=r.id) helpful FROM reviews r JOIN packages p ON p.id=r.package_id WHERE r.id=?",(review_id,)).fetchone()
         return None if row is None else dict(row)
+
+    # Enterprise v3.5 repositories. All reads are organization-scoped and all
+    # policy writes require an approval identifier supplied by the service.
+    def create_enterprise_policy(self, value: dict[str, Any], approval_id: str, changelog: str) -> None:
+        rules = json.dumps(value["rules"], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        version_id = f"PV-{hashlib.sha256((value['id'] + ':1').encode()).hexdigest()[:16].upper()}"
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO enterprise_policies(id,organization_id,name,type,rules,status,current_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (value["id"], value["organization_id"], value["name"], value["type"], rules, value["status"], 1, value["created_at"], value["updated_at"]),
+            )
+            connection.execute(
+                "INSERT INTO policy_versions(id,policy_id,version,rules,changelog,approval_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                (version_id, value["id"], 1, rules, str(changelog)[:500], str(approval_id)[:80], value["created_at"]),
+            )
+        self._secure_database()
+
+    def add_policy_version(self, policy_id: str, version: int, rules: dict[str, Any], changelog: str, approval_id: str) -> None:
+        serialized = json.dumps(rules, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        version_id = f"PV-{hashlib.sha256((policy_id + ':' + str(version)).encode()).hexdigest()[:16].upper()}"
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO policy_versions(id,policy_id,version,rules,changelog,approval_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                (version_id, policy_id, int(version), serialized, str(changelog)[:500], str(approval_id)[:80], utc_now()),
+            )
+            connection.execute("UPDATE enterprise_policies SET rules=?,current_version=?,updated_at=? WHERE id=?", (serialized, int(version), utc_now(), policy_id))
+        self._secure_database()
+
+    def get_enterprise_policy(self, organization_id: str, policy_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM enterprise_policies WHERE organization_id=? AND id=?", (organization_id, policy_id)).fetchone()
+        return self._decode_enterprise_policy(row)
+
+    def list_enterprise_policies(self, organization_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM enterprise_policies WHERE organization_id=? ORDER BY created_at DESC", (organization_id,)).fetchall()
+        return [value for row in rows if (value := self._decode_enterprise_policy(row)) is not None]
+
+    def get_policy_version(self, policy_id: str, version: int) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT id,policy_id,version,rules,changelog,created_at FROM policy_versions WHERE policy_id=? AND version=?", (policy_id, int(version))).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        value["rules"] = json.loads(str(value["rules"]))
+        return value
+
+    @staticmethod
+    def _decode_enterprise_policy(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        value = dict(row)
+        value["rules"] = json.loads(str(value["rules"]))
+        return value
+
+    def append_security_event(self, value: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            previous = connection.execute("SELECT event_hash FROM security_events WHERE organization_id=? ORDER BY rowid DESC LIMIT 1", (value["organization_id"],)).fetchone()
+            previous_hash = str(previous["event_hash"]) if previous is not None else None
+            canonical = json.dumps({key: value[key] for key in ("id", "organization_id", "actor_hash", "action", "resource", "result", "risk_level", "created_at")}, sort_keys=True, separators=(",", ":"))
+            event_hash = hashlib.sha256(((previous_hash or "") + canonical).encode()).hexdigest()
+            connection.execute(
+                "INSERT INTO security_events(id,organization_id,actor_hash,action,resource,result,risk_level,previous_hash,event_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (value["id"], value["organization_id"], value["actor_hash"], value["action"], value["resource"], value["result"], value["risk_level"], previous_hash, event_hash, value["created_at"]),
+            )
+        self._secure_database()
+
+    def list_security_events(self, organization_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id,action,resource,result,risk_level,event_hash,created_at FROM security_events WHERE organization_id=? ORDER BY created_at DESC,id DESC LIMIT ?", (organization_id, max(1, min(200, int(limit))))).fetchall()
+        return [dict(row) for row in rows]
+
+    def validate_security_event_chain(self, organization_id: str) -> bool:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM security_events WHERE organization_id=? ORDER BY rowid", (organization_id,)).fetchall()
+        previous_hash: str | None = None
+        for row in rows:
+            value = dict(row)
+            canonical = json.dumps({key: value[key] for key in ("id", "organization_id", "actor_hash", "action", "resource", "result", "risk_level", "created_at")}, sort_keys=True, separators=(",", ":"))
+            expected = hashlib.sha256(((previous_hash or "") + canonical).encode()).hexdigest()
+            if value.get("previous_hash") != previous_hash or value.get("event_hash") != expected:
+                return False
+            previous_hash = str(value["event_hash"])
+        return True
+
+    def enterprise_security_summary(self, organization_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT (SELECT COUNT(DISTINCT wm.user_id) FROM workspace_members wm JOIN workspaces w ON w.id=wm.workspace_id WHERE w.organization_id=? AND wm.status='ACTIVE') users,"
+                "(SELECT COUNT(*) FROM enterprise_policies WHERE organization_id=? AND status='ACTIVE') policies,"
+                "(SELECT COUNT(*) FROM security_events WHERE organization_id=? AND result NOT IN ('SUCCESS','ALLOWED')) security_events,"
+                "(SELECT COALESCE(MAX(CASE risk_level WHEN 'CRITICAL' THEN 4 WHEN 'HIGH' THEN 3 WHEN 'MEDIUM' THEN 2 ELSE 1 END),1) FROM security_events WHERE organization_id=? AND result NOT IN ('SUCCESS','ALLOWED')) risk",
+                (organization_id, organization_id, organization_id, organization_id),
+            ).fetchone()
+        levels = {1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "CRITICAL"}
+        return {"users": int(row["users"]), "policies": int(row["policies"]), "security_events": int(row["security_events"]), "risk_level": levels.get(int(row["risk"]), "LOW")}
+
+    def enterprise_sla(self, organization_id: str, workspace_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) total,SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) completed,SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) failed,"
+                "AVG(CASE WHEN completed_at IS NOT NULL THEN (julianday(completed_at)-julianday(created_at))*86400 END) average_seconds "
+                "FROM tasks WHERE organization_id=? AND workspace_id=?",
+                (organization_id, workspace_id),
+            ).fetchone()
+        total = int(row["total"] or 0); completed = int(row["completed"] or 0); failed = int(row["failed"] or 0)
+        finished = completed + failed
+        return {"availability": 100.0 if total >= 0 else 0.0, "task_success_rate": round(completed / finished * 100, 2) if finished else 100.0, "average_response_seconds": round(float(row["average_seconds"] or 0), 2), "error_rate": round(failed / finished * 100, 2) if finished else 0.0, "total_tasks": total}
+
+    def list_deployment_profiles(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT id,name,resources,security_settings,enabled_features,limits,status,created_at FROM deployment_profiles ORDER BY name").fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            for field in ("resources", "security_settings", "enabled_features", "limits"):
+                value[field] = json.loads(str(value[field]))
+            result.append(value)
+        return result

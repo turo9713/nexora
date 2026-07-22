@@ -222,6 +222,18 @@ The versioned `/api/v1` facade supports owner-scoped tasks, agents, skills, and
 approval-gated webhooks. API keys are shown once and stored only as scrypt
 hashes; scopes default to deny-all. See [docs/api.md](docs/api.md).
 
+## Enterprise Operations (v3.5)
+
+The Enterprise layer adds a tenant-scoped Security Center, approval-gated and
+versioned policies, immutable security events, SLA metrics, storage health, and
+validated deployment profiles. The SSO layer is foundation-only: SAML, OIDC,
+and OAuth adapters are disabled and production authentication is unchanged.
+
+Dashboard routes are `/security-center`, `/policies`, `/sla`,
+`/storage-health`, and `/enterprise`. Public API reads require the explicit
+`enterprise:read` scope. See [docs/enterprise.md](docs/enterprise.md) and
+[docs/policies.md](docs/policies.md).
+
 ## Development
 
 ```bash

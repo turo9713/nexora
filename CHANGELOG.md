@@ -2,6 +2,29 @@
 
 All notable changes follow Semantic Versioning.
 
+## [3.5.0] - 2026-07-23
+
+### Added
+
+- Tenant-scoped Enterprise Security Center, policy registry and immutable
+  hash-chained security events.
+- Approval-gated policy creation, versioning, and rollback without changing
+  the existing authentication or runtime execution paths.
+- Provider-neutral SAML, OIDC, and OAuth foundation; every external provider
+  remains disabled until separately configured.
+- SLA calculations, read-only storage integrity/permission checks, deployment
+  profiles, and compliance control reporting.
+- Authenticated, rate-limited Enterprise Dashboard and `/api/v1` read APIs.
+- Reversible migration 012 and enterprise unit, integration, and security tests.
+
+### Security
+
+- Enterprise resources are organization/workspace scoped through the existing
+  RBAC and tenant isolation layer.
+- The Dashboard remains read-only for policy changes; policy mutations require
+  a valid, one-time approval in the service layer.
+- Storage checks use read-only SQLite access and do not expose filesystem paths.
+
 ## [3.4.2] - 2026-07-22
 
 ### Fixed
