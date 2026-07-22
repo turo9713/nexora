@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from pathlib import Path
 from typing import Any
 
 from .atomic import ensure_secure_directory
+from nexora.storage.secure_io import append_private_text
 
 
 class AuditRepository:
@@ -20,9 +20,4 @@ class AuditRepository:
     def append(self, event: dict[str, Any]) -> None:
         payload = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
         with self._lock:
-            descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-            with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(self.path, 0o600)
+            append_private_text(self.path, payload, root=self.root)

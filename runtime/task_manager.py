@@ -6,12 +6,14 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 
+from nexora.storage.secure_io import ensure_private_directory, secure_atomic_write_json
+
 
 class TaskManager:
     def __init__(self, validators):
         self.validators = validators
         self.tasks_dir = Path("/workspace/nexora/runtime/state/tasks")
-        self.tasks_dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.tasks_dir)
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -25,7 +27,7 @@ class TaskManager:
         if path.exists():
             history = json.loads(path.read_text(encoding="utf-8"))
         history.append({"event": event, "at": self._now(), **extra})
-        path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        secure_atomic_write_json(path, history, root=self.tasks_dir)
 
     def create_task(self, task_data: dict) -> dict:
         task = {
@@ -73,7 +75,7 @@ class TaskManager:
         return self.tasks_dir / f"{task_id}.json"
 
     def _save(self, task: dict) -> None:
-        self._path(task["id"]).write_text(json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8")
+        secure_atomic_write_json(self._path(task["id"]), task, root=self.tasks_dir)
 
     def _load(self, task_id: str) -> dict:
         return json.loads(self._path(task_id).read_text(encoding="utf-8"))

@@ -124,6 +124,9 @@ def test_v34_frontend_is_event_driven_and_has_no_tool_or_task_mutation() -> None
     for route in ("/home", "/activity", "/notifications", "/workspace", "/agents/status", "/analytics", "/onboarding"):
         assert route in script or route in index
     assert "new EventSource" in script and "TASK_PROGRESS_UPDATED" in script and "onerror" in script
+    assert "tasksPageV342Base" in script and "taskPageV342Base" in script
+    assert "event.lastEventId" in script and "realtimeSeen" in script
+    assert 'dataset.realtimeFallback="true"' in script
     assert 'card("Workflows"' in script and "data.workflows.items" in script
     assert "setInterval(" not in script
     assert "/api/realtime/tasks" in server and "text/event-stream" in server

@@ -95,11 +95,34 @@ function connectRealtime(workspaceId,cursor){
   if(state.realtime)state.realtime.close();
   const query=new URLSearchParams({workspace_id:workspaceId});if(cursor)query.set("after",cursor);
   const stream=new EventSource("/api/realtime/tasks?"+query);
-  REALTIME_EVENTS.forEach(type=>stream.addEventListener(type,event=>{try{const value=JSON.parse(event.data);if(state.realtimeCallback)state.realtimeCallback(value)}catch{}}));
+  if(!state.realtimeSeen)state.realtimeSeen=new Set();
+  REALTIME_EVENTS.forEach(type=>stream.addEventListener(type,event=>{try{const eventId=event.lastEventId||"";if(eventId&&state.realtimeSeen.has(eventId))return;if(eventId){state.realtimeSeen.add(eventId);if(state.realtimeSeen.size>500)state.realtimeSeen.clear()}const value=JSON.parse(event.data);if(state.realtimeCallback)state.realtimeCallback(value)}catch{}}));
   stream.onopen=()=>{el("connection").textContent="Realtime подключён";el("connection").classList.remove("warning")};
   stream.onerror=()=>{el("connection").textContent="Восстановление realtime…";el("connection").classList.add("warning")};
   state.realtime=stream;state.realtimeWorkspace=workspaceId;
 }
+
+const tasksPageV342Base=tasksPage;
+tasksPage=async function(){
+  await tasksPageV342Base();
+  const summary=await api("/api/dashboard");
+  const refresh=node("button","Обновить","secondary");
+  refresh.type="button";refresh.dataset.realtimeFallback="true";refresh.onclick=()=>tasksPage().catch(errorView);
+  const notice=el("content").querySelector("article.card");if(notice)notice.append(refresh);
+  state.realtimeCallback=()=>tasksPage().catch(errorView);
+  connectRealtime(summary.workspace.id,summary.realtime_cursor);
+};
+
+const taskPageV342Base=taskPage;
+taskPage=async function(id){
+  await taskPageV342Base(id);
+  const summary=await api("/api/dashboard");
+  const refresh=node("button","Обновить","secondary");
+  refresh.type="button";refresh.dataset.realtimeFallback="true";refresh.onclick=()=>taskPage(id).catch(errorView);
+  const details=el("content").querySelector("article.card");if(details)details.append(refresh);
+  state.realtimeCallback=event=>{if(event&&event.task_id===id)taskPage(id).catch(errorView)};
+  connectRealtime(summary.workspace.id,summary.realtime_cursor);
+};
 
 function feedRow(item){const row=node("div",undefined,"activity-item");const marker=node("span","","activity-marker");const info=node("div");info.append(node("strong",item.message||item.type),node("p",[item.resource_id,item.stage,item.progress===null||item.progress===undefined?null:`${item.progress}%`].filter(Boolean).join(" · ")||"Без дополнительных данных","muted"));row.append(marker,info,node("small",fmt(item.timestamp||item.created_at),"muted"));return row}
 

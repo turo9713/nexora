@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -14,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_and_public_boundary() -> None:
-    assert (ROOT / "VERSION").read_text().strip() == "3.4.0"
+    assert (ROOT / "VERSION").read_text().strip() == "3.4.2"
     assert (ROOT / "LICENSE").is_file()
     assert (ROOT / "SECURITY.md").is_file()
     assert (ROOT / "core/README.md").is_file()
@@ -58,12 +59,13 @@ def test_offline_demo_completes_without_publication(tmp_path: Path) -> None:
     assert result["final_status"] == "COMPLETED"
     assert result["network"] == "disabled"
     assert result["published"] is False
-    for directory in tmp_path.rglob("*"):
-        mode = stat.S_IMODE(directory.stat().st_mode)
-        if directory.is_dir():
-            assert mode == 0o700
-        elif directory.is_file():
-            assert mode == 0o600
+    if os.name == "posix":
+        for directory in tmp_path.rglob("*"):
+            mode = stat.S_IMODE(directory.stat().st_mode)
+            if directory.is_dir():
+                assert mode == 0o700
+            elif directory.is_file():
+                assert mode == 0o600
 
 
 def test_release_tree_has_no_local_secret_or_state() -> None:

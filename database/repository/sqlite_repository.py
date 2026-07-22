@@ -155,13 +155,18 @@ class SQLiteRepository:
             connection.execute(
                 """
                 INSERT INTO tasks(id, owner, title, status, progress, agent, created_at, updated_at,
-                                  completed_at, result_summary, error_code)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  completed_at, result_summary, error_code, organization_id,
+                                  workspace_id, creator_id, assignee_id)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     owner=excluded.owner, title=excluded.title, status=excluded.status,
                     progress=excluded.progress, agent=excluded.agent, updated_at=excluded.updated_at,
                     completed_at=excluded.completed_at, result_summary=excluded.result_summary,
-                    error_code=excluded.error_code
+                    error_code=excluded.error_code,
+                    organization_id=COALESCE(excluded.organization_id,tasks.organization_id),
+                    workspace_id=COALESCE(excluded.workspace_id,tasks.workspace_id),
+                    creator_id=COALESCE(excluded.creator_id,tasks.creator_id),
+                    assignee_id=COALESCE(excluded.assignee_id,tasks.assignee_id)
                 """,
                 (
                     str(task["task_id"]), owner, str(task.get("title") or "")[:200],
@@ -169,6 +174,8 @@ class SQLiteRepository:
                     str(task.get("assigned_agent") or "unknown")[:100], str(task.get("created_at") or utc_now()),
                     str(task.get("updated_at") or utc_now()), task.get("completed_at"),
                     str(task.get("result_summary") or "")[:1500], task.get("error_code"),
+                    task.get("organization_id"), task.get("workspace_id"),
+                    task.get("creator_id"), task.get("assignee_id"),
                 ),
             )
         self._secure_database()

@@ -11,6 +11,7 @@ from nexora.agents.registry import AgentRegistry
 from nexora.database import SQLiteRepository
 from nexora.runtime.events import EventBus, SQLiteEventSink
 from nexora.security.policies import PolicyEngine
+from nexora.collaboration import TeamAccessDenied, TeamService
 
 from .commands.approvals import approval_decision_message, approval_keyboard
 from .commands.cancel import cancel_response
@@ -55,6 +56,10 @@ WORKFLOW_NAME = "development_flow"
 MAX_TASK_LENGTH = 2000
 MIN_MESSAGE_INTERVAL_SECONDS = 0.4
 BUSY_STATUSES = {"NEW", "QUEUED", "PLANNING", "IN_PROGRESS"}
+
+
+class WorkspaceRequiredError(RuntimeError):
+    """The owner has no deterministic, authorized workspace binding."""
 
 
 NEW_TASK_HINT = (
@@ -108,6 +113,9 @@ class TelegramRuntimeHandlers:
         self.actions = ActionRepository(state_path / "actions")
         self.idempotency = IdempotencyService(self.actions)
         self.audit = AuditService(AuditRepository(state_path / "audit"), database=self.database)
+        self.teams = TeamService(self.database, self.policy, self.audit)
+        if not self.teams.list_organizations(self.namespace):
+            self.teams.bootstrap_personal(self.namespace)
         self.health = HealthService(self.database, self.registry, state_path)
         self.cancellations = CancellationService(
             self.tasks,
@@ -201,6 +209,27 @@ class TelegramRuntimeHandlers:
         if command == "/help":
             return self._owner_response(format_help())
         if command == "/status":
+            session = self.context.load()
+            workspace_id = session.get("workspace_id") if isinstance(session, dict) else None
+            result = "SUCCESS"
+            if not workspace_id:
+                try:
+                    workspace_id = self._resolve_workspace(None)["workspace_id"]
+                except (WorkspaceRequiredError, TeamAccessDenied):
+                    result = "NX_WORKSPACE_REQUIRED"
+            if workspace_id:
+                try:
+                    self.teams.workspace_context(self.namespace, str(workspace_id), "tasks:read")
+                except TeamAccessDenied:
+                    result = "DENIED"
+                    workspace_id = None
+            self.audit.record(
+                "TELEGRAM_STATUS_VIEWED",
+                action_result=result,
+                command_type="status",
+                owner_namespace=self.namespace,
+                workspace_id=workspace_id,
+            )
             return self._owner_response(status_response(self.tasks, self.context, self.namespace))
         if command in {"/history", "/tasks"}:
             return self._owner_response(history_response(self.tasks, self.namespace, argument))
@@ -242,7 +271,28 @@ class TelegramRuntimeHandlers:
 
         self.context.clear()
         session = self.context.new()
-        task = self.tasks.create(self.namespace, description, session["session_id"])
+        try:
+            workspace = self._resolve_workspace(session)
+        except (WorkspaceRequiredError, TeamAccessDenied):
+            self.audit.record(
+                "TASK_REJECTED",
+                action_result="NX_WORKSPACE_REQUIRED",
+                code="NX_WORKSPACE_REQUIRED",
+                owner_namespace=self.namespace,
+            )
+            return self._owner_response("Рабочее пространство недоступно.\nКод: NX_WORKSPACE_REQUIRED")
+        session = self.context.bind_workspace(
+            session,
+            owner_namespace=self.namespace,
+            organization_id=workspace["organization_id"],
+            workspace_id=workspace["workspace_id"],
+        )
+        task = self.tasks.create(
+            self.namespace,
+            description,
+            session["session_id"],
+            workspace_context=workspace,
+        )
         session = self.context.set_active_task(session, task["task_id"])
         session = self.context.add_turn(session, "user", description)
         self.context.save(session)
@@ -292,6 +342,24 @@ class TelegramRuntimeHandlers:
         if session is None or task is None:
             self.context.clear()
             return self._owner_response("Диалог завершён или истёк. Используй /newtask для новой задачи.")
+        try:
+            workspace = self._resolve_workspace(session)
+        except (WorkspaceRequiredError, TeamAccessDenied):
+            self.audit.record(
+                "SECURITY_DENIED",
+                surface="telegram_continuation",
+                code="NX_WORKSPACE_REQUIRED",
+            )
+            return self._owner_response("Продолжение диалога заблокировано.\nКод: NX_WORKSPACE_REQUIRED")
+        if task.get("workspace_id") and task.get("workspace_id") != workspace["workspace_id"]:
+            self.audit.record(
+                "SECURITY_DENIED",
+                surface="telegram_continuation",
+                code="NX_PERMISSION_DENIED",
+            )
+            return self._owner_response("Продолжение диалога заблокировано.\nКод: NX_PERMISSION_DENIED")
+        if not task.get("workspace_id"):
+            task = self.tasks.bind_workspace(self.namespace, task["task_id"], workspace)
         if task.get("status") in BUSY_STATUSES:
             return self._owner_response("Задача ещё выполняется. Используй /status и дождись завершения этапа.")
         if task.get("status") == "WAITING_APPROVAL":
@@ -428,6 +496,29 @@ class TelegramRuntimeHandlers:
         self.idempotency.set_status(self.namespace, action_key, "SUCCEEDED")
         self.audit.record("APPROVAL_RESUMED", source="telegram_runtime", action_result="STARTED", task_id=task_id, approval_id=approval_id)
         return True
+
+    def _resolve_workspace(self, session: dict[str, Any] | None) -> dict[str, Any]:
+        bound_workspace = str((session or {}).get("workspace_id") or "")
+        bound_organization = str((session or {}).get("organization_id") or "")
+        bound_owner = str((session or {}).get("owner_namespace") or "")
+        if bound_workspace:
+            if bound_owner and bound_owner != self.namespace:
+                raise TeamAccessDenied("session owner mismatch")
+            context = self.teams.workspace_context(self.namespace, bound_workspace, "tasks:create")
+            if bound_organization and context["organization_id"] != bound_organization:
+                raise TeamAccessDenied("session organization mismatch")
+            return {**context, "workspace_id": bound_workspace}
+
+        workspaces = self.teams.list_workspaces(self.namespace)
+        selected: dict[str, Any] | None = workspaces[0] if len(workspaces) == 1 else None
+        if selected is None:
+            personal = [item for item in workspaces if item.get("name") == "Personal Workspace"]
+            selected = personal[0] if len(personal) == 1 else None
+        if selected is None:
+            raise WorkspaceRequiredError("workspace selection is required")
+        workspace_id = str(selected["id"])
+        context = self.teams.workspace_context(self.namespace, workspace_id, "tasks:create")
+        return {**context, "workspace_id": workspace_id}
 
     def _runtime_policy_allowed(self) -> bool:
         try:

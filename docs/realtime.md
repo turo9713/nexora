@@ -4,6 +4,19 @@ Nexora uses authenticated Server-Sent Events (SSE) at
 `GET /api/realtime/tasks`. The browser establishes one same-origin EventSource
 connection; it does not continuously poll task endpoints.
 
+## Telegram workspace binding (v3.4.2)
+
+Before a Telegram task is created, Nexora resolves and verifies the owner's
+active session workspace, sole accessible workspace, or unique personal
+workspace. Arbitrary workspace identifiers in message text are ignored. If no
+authorized deterministic workspace exists, task creation fails with
+`NX_WORKSPACE_REQUIRED`.
+
+Task events carry the internal workspace scope into the durable event journal.
+The SSE projection still returns only allowlisted fields to an authenticated
+member of that workspace. `/tasks` and `/tasks/{id}` use the event cursor and
+`Last-Event-ID`, deduplicate event IDs, and keep a manual refresh fallback.
+
 The durable source is the sanitized SQLite Event Bus journal. The stream sends
 only:
 

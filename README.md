@@ -3,7 +3,8 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 3.4 adds a tenant-scoped operations experience on top of the read-only
+Nexora 3.4.2 adds private atomic task storage and workspace-bound Telegram
+realtime events to the tenant-scoped operations experience on top of the read-only
 Task Control Center: a user home, Server-Sent Event task updates, activity,
 notifications, workspace and agent status views, analytics, and safe onboarding.
 The repository contains the open-source

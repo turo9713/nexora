@@ -2,6 +2,28 @@
 
 All notable changes follow Semantic Versioning.
 
+## [3.4.2] - 2026-07-22
+
+### Fixed
+
+- All JSON task, history, session, action, approval, context, and audit writers
+  now use one atomic private-storage helper with explicit `0600` file and
+  `0700` directory modes.
+- Telegram tasks are bound to an authorized organization and workspace before
+  creation, allowing their durable events to reach the correctly scoped SSE
+  Dashboard stream.
+- `/tasks` and `/tasks/{id}` consume authenticated workspace-filtered SSE with
+  cursor-based reconnect, event-ID deduplication, and a safe manual refresh.
+- Telegram `/status` records a sanitized `TELEGRAM_STATUS_VIEWED` audit event
+  without invoking the model.
+
+### Security
+
+- Workspace selection is deterministic and membership-checked; user text cannot
+  choose a workspace and missing or revoked access fails closed.
+- `python -m nexora.storage.repair_permissions` checks or repairs only
+  allowlisted state roots without following symbolic links.
+
 ## [3.4.0] - 2026-07-22
 
 ### Added
