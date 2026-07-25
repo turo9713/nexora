@@ -44,7 +44,7 @@ jobs:
           done
       - name: Build source artifact
         run: bash scripts/build-release-archive.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nexora-${{ github.ref_name }}-source
           path: |
