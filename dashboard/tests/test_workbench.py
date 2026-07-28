@@ -182,3 +182,100 @@ def test_dashboard_task_control_center_http_is_read_only(dashboard_factory) -> N
         server.server_close()
         thread.join(timeout=5)
         runtime.execution.shutdown()
+
+
+def test_authenticated_workbench_http_runs_workspace_scoped_task(dashboard_factory) -> None:
+    app, config = dashboard_factory()
+    runtime = attach_runtime(app, config)
+
+    class Handler(DashboardRequestHandler):
+        pass
+
+    Handler.app = app
+    from http.server import ThreadingHTTPServer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+
+    def call(method: str, path: str, body=None, cookie=None, csrf=None):
+        headers = {"Origin": ORIGIN, "Accept": "application/json"}
+        payload = None
+        if body is not None:
+            payload = json.dumps(body)
+            headers["Content-Type"] = "application/json"
+        if cookie:
+            headers["Cookie"] = f"{COOKIE_NAME}={cookie}"
+        if csrf:
+            headers["X-CSRF-Token"] = csrf
+        connection.request(method, path, body=payload, headers=headers)
+        response = connection.getresponse()
+        raw = response.read()
+        return response, json.loads(raw) if raw else {}
+
+    try:
+        denied, _ = call(
+            "POST",
+            "/api/workbench/tasks",
+            {"message": "must be denied", "idempotency_key": "anonymous-request"},
+        )
+        assert denied.status == 401
+
+        response, login = call("POST", "/api/login", {"username": "admin", "password": PASSWORD})
+        assert response.status == 200
+        cookie = response.getheader("Set-Cookie").split(";", 1)[0].split("=", 1)[1]
+        workspace_id = app.api.list_workspaces({})["items"][0]["id"]
+        payload = {
+            "message": "Create a safe workbench plan",
+            "workspace_id": workspace_id,
+            "idempotency_key": "workbench-http-0001",
+        }
+        response, denied_workspace = call(
+            "POST",
+            "/api/workbench/tasks",
+            {**payload, "workspace_id": "WS-NOT-AVAILABLE", "idempotency_key": "workbench-cross-tenant"},
+            cookie,
+            login["csrf_token"],
+        )
+        assert response.status == 400
+        assert denied_workspace["error"] == "NX_WORKSPACE_REQUIRED"
+        response, created = call("POST", "/api/workbench/tasks", payload, cookie, login["csrf_token"])
+        assert response.status == 202
+        task_id = created["id"]
+        completed = wait_for(app, task_id)
+        assert completed["workspace_id"] == workspace_id
+        assert completed["organization_id"]
+
+        response, repeated = call("POST", "/api/workbench/tasks", payload, cookie, login["csrf_token"])
+        assert response.status in {201, 202}
+        assert repeated["id"] == task_id
+
+        response, continued = call(
+            "POST",
+            f"/api/workbench/tasks/{task_id}/messages",
+            {
+                "message": "Add one implementation milestone",
+                "workspace_id": workspace_id,
+                "idempotency_key": "workbench-http-message-0001",
+            },
+            cookie,
+            login["csrf_token"],
+        )
+        assert response.status == 202 and continued["id"] == task_id
+        assert wait_for(app, task_id)["turn_number"] == 2
+
+        response, details = call("GET", f"/api/tasks/{task_id}", cookie=cookie)
+        assert response.status == 200
+        assert details["status"] == "COMPLETED"
+        assert "WEB_OK" in details["result_summary"]
+        assert any(
+            item["event"] == "DASHBOARD_TASK_CREATED"
+            for item in app.api.database.list_audit(event="DASHBOARD_TASK_CREATED", limit=100)
+        )
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        runtime.execution.shutdown()

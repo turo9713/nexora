@@ -7,6 +7,7 @@ import pytest
 
 from nexora.dashboard.api import DashboardAPIError
 from nexora.billing import BillingAccessDenied
+from nexora.skills.registry.registry import BUILTIN_SKILLS
 
 from .conftest import NAMESPACE
 
@@ -93,7 +94,7 @@ def test_billing_dashboard_admin_changes_are_approved_and_tenant_safe(dashboard_
     app, _ = dashboard_factory()
     organization = app.api.list_organizations()["items"][0]
     plans = app.api.list_plans()["items"]
-    assert [item["id"] for item in plans] == ["free", "pro", "team", "enterprise"]
+    assert [item["id"] for item in plans] == ["free", "starter", "pro", "team", "business", "enterprise"]
     summary = app.api.billing_summary({"organization_id": organization["id"]})
     assert summary["subscription"]["plan_id"] == "free"
     assert summary["limits"]["limits"]["tasks_monthly"] == 100
@@ -166,7 +167,7 @@ def test_audit_is_sanitized_and_created(dashboard_factory) -> None:
 def test_skill_listing_and_changes_use_existing_approval(dashboard_factory) -> None:
     app, _ = dashboard_factory()
     listed = app.api.list_skills()["items"]
-    assert {item["id"] for item in listed} == {"content-writer", "research", "github-assistant", "github-agent", "analytics"}
+    assert {item["id"] for item in listed} == set(BUILTIN_SKILLS)
     assert next(item for item in listed if item["id"] == "content-writer")["status"] == "ACTIVE"
 
     request = app.api.request_skill_action("content-writer", "disable", "skill-session")
@@ -231,7 +232,8 @@ def test_marketplace_dashboard_publish_install_and_approval(dashboard_factory) -
     }
     published = app.api.publish_marketplace({"publisher_id": publisher_id, "manifest": manifest})
     assert published["status"] == "PUBLISHED"
-    assert app.api.marketplace_catalog({"type": "TEMPLATE"})["items"][0]["id"] == "dashboard-template"
+    template_ids = {item["id"] for item in app.api.marketplace_catalog({"type": "TEMPLATE"})["items"]}
+    assert "dashboard-template" in template_ids
     workspace = app.api.list_workspaces({})["items"][0]
     requested = app.api.request_marketplace_install("dashboard-template", {"workspace_id": workspace["id"]}, "install-session")
     assert requested["status"] == "WAITING_APPROVAL"

@@ -165,10 +165,11 @@ def test_task_control_center_frontend_and_http_surface_are_read_only() -> None:
         "created_at", "updated_at", "completed_at", "/events", "Timeline",
         "Агент:", "Workflow:",
     ))
-    for forbidden in ("tasksPageV31", "taskPageV31", "requestKey", "/messages", "/cancel"):
+    for forbidden in ("tasksPageV31", "taskPageV31"):
         assert forbidden not in script
     assert 'api("/api/tasks",{method:"POST"' not in script
+    assert 'api(`/api/tasks/${encoded}/messages`' not in script
+    assert 'api(`/api/tasks/${encoded}/cancel`' not in script
     assert '"tasks:write"' not in permissions
-    assert "create_dashboard_task(body)" not in server
-    assert "continue_dashboard_task" not in server
-    assert "cancel_dashboard_task" not in server
+    assert 'path == "/api/workbench/tasks"' in server
+    assert 'r"/api/workbench/tasks/' in server

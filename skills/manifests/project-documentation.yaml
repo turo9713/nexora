@@ -1,0 +1,28 @@
+id: project-documentation
+name: Project Documentation
+version: 1.0.0
+description: Проверка ADR, требований, инструкций и структуры проектной документации в разрешённом workspace.
+author: Nexora
+category: development
+agent: developer
+permissions:
+  filesystem:
+    scope: [workspace]
+    mode: read_only
+  network:
+    mode: none
+  shell:
+    enabled: false
+  production:
+    enabled: false
+risk:
+  level: low
+tools: [repository_analysis, reporting]
+security:
+  sandbox:
+    enabled: true
+approval:
+  required: false
+compatibility:
+  min_platform: 1.7.0
+status: DISABLED

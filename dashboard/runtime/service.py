@@ -143,7 +143,13 @@ class DashboardTaskRuntime:
             raise DashboardTaskRuntimeError(400, "NX_VALIDATION_ERROR", "Некорректный ключ запроса")
         return key
 
-    def create(self, namespace: str, message: Any, request_key: Any) -> dict[str, Any]:
+    def create(
+        self,
+        namespace: str,
+        message: Any,
+        request_key: Any,
+        workspace_context: dict[str, Any],
+    ) -> dict[str, Any]:
         text = self._message(message)
         key = f"dashboard-create:{self._request_key(request_key)}"
         with self._lock:
@@ -159,8 +165,18 @@ class DashboardTaskRuntime:
             if active is not None and active.get("status") in BUSY_STATUSES | {"WAITING_APPROVAL"}:
                 raise DashboardTaskRuntimeError(409, "NX_TASK_ACTIVE", "Сначала дождитесь завершения или отмените текущую задачу")
             self.context.clear()
-            session = self.context.new()
-            task = self.tasks.create(namespace, text, str(session["session_id"]))
+            session = self.context.bind_workspace(
+                self.context.new(),
+                owner_namespace=namespace,
+                organization_id=str(workspace_context["organization_id"]),
+                workspace_id=str(workspace_context["workspace_id"]),
+            )
+            task = self.tasks.create(
+                namespace,
+                text,
+                str(session["session_id"]),
+                workspace_context=workspace_context,
+            )
             task = self.tasks.update_fields(namespace, task["task_id"], assigned_agent="Orchestrator")
             session = self.context.set_active_task(session, task["task_id"])
             session = self.context.add_turn(session, "user", text)
@@ -187,7 +203,14 @@ class DashboardTaskRuntime:
             self.audit.record("DASHBOARD_TASK_CREATED", source="dashboard_runtime", action_result=task["status"], task_id=task["task_id"])
             return task
 
-    def continue_task(self, namespace: str, task_id: str, message: Any, request_key: Any) -> dict[str, Any]:
+    def continue_task(
+        self,
+        namespace: str,
+        task_id: str,
+        message: Any,
+        request_key: Any,
+        workspace_context: dict[str, Any],
+    ) -> dict[str, Any]:
         text = self._message(message)
         key = f"dashboard-message:{task_id}:{self._request_key(request_key)}"
         with self._lock:
@@ -199,6 +222,13 @@ class DashboardTaskRuntime:
             task = self.tasks.get(namespace, task_id)
             session = self.context.load()
             if task is None or session is None or session.get("active_task_id") != task_id:
+                raise DashboardTaskRuntimeError(404, "NX_TASK_NOT_FOUND", "Задача не найдена или недоступна")
+            if (
+                session.get("owner_namespace") != namespace
+                or session.get("organization_id") != str(workspace_context["organization_id"])
+                or session.get("workspace_id") != str(workspace_context["workspace_id"])
+                or task.get("workspace_id") != str(workspace_context["workspace_id"])
+            ):
                 raise DashboardTaskRuntimeError(404, "NX_TASK_NOT_FOUND", "Задача не найдена или недоступна")
             if task.get("status") in BUSY_STATUSES:
                 raise DashboardTaskRuntimeError(409, "NX_TASK_ACTIVE", "Задача ещё выполняется")
@@ -223,7 +253,24 @@ class DashboardTaskRuntime:
         self.tasks.update_fields(namespace, task_id, pending_approval_id=None)
         return self.execution.submit(namespace, task_id, str(session["session_id"]))
 
-    def cancel(self, namespace: str, task_id: str) -> dict[str, Any]:
+    def cancel(
+        self,
+        namespace: str,
+        task_id: str,
+        workspace_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        task = self.tasks.get(namespace, task_id)
+        session = self.context.load()
+        if (
+            task is None
+            or session is None
+            or session.get("active_task_id") != task_id
+            or session.get("owner_namespace") != namespace
+            or session.get("organization_id") != str(workspace_context["organization_id"])
+            or session.get("workspace_id") != str(workspace_context["workspace_id"])
+            or task.get("workspace_id") != str(workspace_context["workspace_id"])
+        ):
+            raise DashboardTaskRuntimeError(404, "NX_TASK_NOT_FOUND", "Задача не найдена или недоступна")
         cancelled, task = self.cancellations.cancel(namespace, task_id)
         if task is None:
             raise DashboardTaskRuntimeError(404, "NX_TASK_NOT_FOUND", "Задача не найдена или недоступна")
@@ -239,4 +286,3 @@ class DashboardTaskRuntime:
             {"role": str(turn["role"]), "content": redact_text(turn["content"])[:3000]}
             for turn in session.get("turns", [])
         ]
-

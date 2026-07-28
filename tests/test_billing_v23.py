@@ -59,11 +59,11 @@ def test_seeded_plans_and_subscription_lifecycle(tmp_path: Path) -> None:
     database, teams, billing, _, _, _ = platform(tmp_path)
     organization, _ = tenant(teams)
     plans = billing.list_plans()
-    assert [item["id"] for item in plans] == ["free", "pro", "team", "enterprise"]
+    assert [item["id"] for item in plans] == ["free", "starter", "pro", "team", "business", "enterprise"]
     assert plans[0]["limits"]["tasks_monthly"] == 100
-    assert plans[1]["limits"]["agents_limit"] is None
-    assert plans[2]["features"]["audit"] is True
-    assert plans[3]["features"]["sso"] is True
+    assert plans[2]["limits"]["agents_limit"] is None
+    assert plans[3]["features"]["audit"] is True
+    assert plans[5]["features"]["sso"] is True
     subscription = billing.subscription(CUSTOMER, organization["id"])
     assert subscription["plan_id"] == "free" and subscription["status"] == "ACTIVE"
     assert database.list_billing_events(organization["id"])[0]["event"] == "SUBSCRIPTION_CREATED"
@@ -172,6 +172,7 @@ def test_migration_007_backup_integrity_and_rollback(tmp_path: Path) -> None:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 6
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert connection.execute("SELECT COUNT(*) FROM organizations").fetchone()[0] == 0
+    database.rollback(13)
     database.rollback(12)
     database.rollback(11)
     database.rollback(10)

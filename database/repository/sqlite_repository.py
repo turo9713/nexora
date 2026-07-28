@@ -60,6 +60,7 @@ class SQLiteRepository:
             (10, self.migrations_root / "010_agent_ecosystem.sql"),
             (11, self.migrations_root / "011_operations.sql"),
             (12, self.migrations_root / "012_enterprise.sql"),
+            (13, self.migrations_root / "013_ai_workforce.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -69,8 +70,8 @@ class SQLiteRepository:
                     applied = None
                 if applied is not None:
                     continue
-                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10, 11, 12} else None
-                if version in {6, 7, 8, 9, 10, 11, 12} and current_version == version - 1:
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10, 11, 12, 13} else None
+                if version in {6, 7, 8, 9, 10, 11, 12, 13} and current_version == version - 1:
                     connection.commit()
                     self._backup_before_version(connection, version)
                 connection.executescript(path.read_text(encoding="utf-8"))
@@ -78,7 +79,7 @@ class SQLiteRepository:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
-                if version in {6, 7, 8, 9, 10, 11, 12} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                if version in {6, 7, 8, 9, 10, 11, 12, 13} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError(f"migration {version:03d} integrity check failed")
         self._secure_database()
         return self.schema_version()
@@ -107,13 +108,13 @@ class SQLiteRepository:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def rollback(self, version: int = 12) -> None:
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:
+    def rollback(self, version: int = 13) -> None:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem", 11: "operations", 12: "enterprise"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem", 11: "operations", 12: "enterprise", 13: "ai_workforce"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -319,7 +320,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 12
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 13
         except sqlite3.Error:
             return False
 
@@ -1785,6 +1786,141 @@ class SQLiteRepository:
         with self._connect() as connection:
             rows = connection.execute("SELECT id,event,result,metadata,created_at FROM marketplace_events WHERE item_id=? ORDER BY created_at DESC LIMIT ?", (item_id,max(1,min(200,int(limit))))).fetchall()
         return [dict(row) for row in rows]
+
+    # AI Workforce Marketplace v4.0 repositories.
+    def upsert_marketplace_metadata(self, value: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO marketplace_metadata(item_id,listing_kind,tags,price_cents,currency,changelog,compatibility,screenshots,documentation,auto_update,visibility,organization_id,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET listing_kind=excluded.listing_kind,tags=excluded.tags,price_cents=excluded.price_cents,currency=excluded.currency,changelog=excluded.changelog,compatibility=excluded.compatibility,screenshots=excluded.screenshots,documentation=excluded.documentation,auto_update=excluded.auto_update,visibility=excluded.visibility,organization_id=excluded.organization_id,updated_at=excluded.updated_at",
+                (
+                    value["item_id"], value["listing_kind"], json.dumps(value.get("tags", []), ensure_ascii=False),
+                    int(value.get("price_cents", 0)), value.get("currency", "USD"), value.get("changelog", ""),
+                    json.dumps(value.get("compatibility", {}), ensure_ascii=False),
+                    json.dumps(value.get("screenshots", []), ensure_ascii=False), value.get("documentation", ""),
+                    1 if value.get("auto_update") else 0, value.get("visibility", "PUBLIC"),
+                    value.get("organization_id"), value["created_at"], value["updated_at"],
+                ),
+            )
+        self._secure_database()
+
+    def get_marketplace_metadata(self, item_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM marketplace_metadata WHERE item_id=?", (item_id,)).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        for key, fallback in (("tags", []), ("compatibility", {}), ("screenshots", [])):
+            try:
+                value[key] = json.loads(value.get(key) or json.dumps(fallback))
+            except json.JSONDecodeError:
+                value[key] = fallback
+        value["auto_update"] = bool(value.get("auto_update"))
+        return value
+
+    def upsert_workforce_installation(self, value: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO workforce_installations(id,marketplace_installation_id,workspace_id,item_id,version,employee_key,status,auto_update,configuration,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,item_id) DO UPDATE SET marketplace_installation_id=excluded.marketplace_installation_id,version=excluded.version,employee_key=excluded.employee_key,status=excluded.status,auto_update=excluded.auto_update,configuration=excluded.configuration,updated_at=excluded.updated_at",
+                (
+                    value["id"], value["marketplace_installation_id"], value["workspace_id"], value["item_id"],
+                    value["version"], value["employee_key"], value["status"], 1 if value.get("auto_update") else 0,
+                    json.dumps(value.get("configuration", {}), ensure_ascii=False), value["created_at"], value["updated_at"],
+                ),
+            )
+            row = connection.execute("SELECT * FROM workforce_installations WHERE workspace_id=? AND item_id=?", (value["workspace_id"], value["item_id"])).fetchone()
+        self._secure_database()
+        return {} if row is None else dict(row)
+
+    def replace_workforce_resources(self, installation_id: str, resources: list[dict[str, Any]]) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM workforce_resources WHERE installation_id=?", (installation_id,))
+            connection.executemany(
+                "INSERT INTO workforce_resources(id,installation_id,resource_type,resource_key,configuration,created_at) VALUES(?,?,?,?,?,?)",
+                [
+                    (
+                        value["id"], installation_id, value["resource_type"], value["resource_key"],
+                        json.dumps(value.get("configuration", {}), ensure_ascii=False), value["created_at"],
+                    )
+                    for value in resources
+                ],
+            )
+        self._secure_database()
+
+    def list_workforce_resources(self, installation_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,resource_type,resource_key,configuration,created_at FROM workforce_resources WHERE installation_id=? ORDER BY resource_type,resource_key",
+                (installation_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            try:
+                value["configuration"] = json.loads(value.get("configuration") or "{}")
+            except json.JSONDecodeError:
+                value["configuration"] = {}
+            result.append(value)
+        return result
+
+    def list_workforce_installations(self, workspace_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT w.id,w.workspace_id,w.item_id,w.version,w.employee_key,w.status,w.auto_update,w.configuration,w.created_at,w.updated_at,m.name,m.description,m.type,m.risk_level,"
+                "(SELECT COUNT(*) FROM tasks t WHERE t.workspace_id=w.workspace_id AND lower(t.agent)=lower(m.name)) tasks,"
+                "(SELECT COUNT(*) FROM tasks t WHERE t.workspace_id=w.workspace_id AND lower(t.agent)=lower(m.name) AND t.status='COMPLETED') completed_tasks,"
+                "(SELECT MAX(t.updated_at) FROM tasks t WHERE t.workspace_id=w.workspace_id AND lower(t.agent)=lower(m.name)) last_activity "
+                "FROM workforce_installations w JOIN marketplace_items m ON m.id=w.item_id WHERE w.workspace_id=? ORDER BY w.updated_at DESC",
+                (workspace_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_workforce_installation(self, workspace_id: str, item_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM workforce_installations WHERE workspace_id=? AND item_id=?", (workspace_id, item_id)).fetchone()
+        return None if row is None else dict(row)
+
+    def set_workforce_status(self, workspace_id: str, item_id: str, status: str) -> bool:
+        with self._connect() as connection:
+            changed = connection.execute("UPDATE workforce_installations SET status=?,updated_at=? WHERE workspace_id=? AND item_id=?", (status, utc_now(), workspace_id, item_id)).rowcount
+        self._secure_database()
+        return changed == 1
+
+    def upsert_integration_wizard(self, value: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO integration_wizards(id,installation_id,workspace_id,provider,secret_reference,configuration,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(installation_id,provider) DO UPDATE SET secret_reference=excluded.secret_reference,configuration=excluded.configuration,status=excluded.status,updated_at=excluded.updated_at",
+                (
+                    value["id"], value["installation_id"], value["workspace_id"], value["provider"],
+                    value.get("secret_reference"), json.dumps(value.get("configuration", {}), ensure_ascii=False),
+                    value["status"], value["created_at"], value["updated_at"],
+                ),
+            )
+            row = connection.execute("SELECT id,installation_id,workspace_id,provider,status,created_at,updated_at FROM integration_wizards WHERE installation_id=? AND provider=?", (value["installation_id"], value["provider"])).fetchone()
+        self._secure_database()
+        return {} if row is None else dict(row)
+
+    def get_integration_wizard(self, installation_id: str, provider: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM integration_wizards WHERE installation_id=? AND provider=?", (installation_id, provider)).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        try:
+            value["configuration"] = json.loads(value.get("configuration") or "{}")
+        except json.JSONDecodeError:
+            value["configuration"] = {}
+        return value
+
+    def marketplace_creator_earnings(self, publisher_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(gross_cents),0) gross_cents,COALESCE(SUM(commission_cents),0) commission_cents,COALESCE(SUM(creator_cents),0) creator_cents,COUNT(*) events FROM marketplace_earnings WHERE publisher_id=? AND status='ESTIMATED'",
+                (publisher_id,),
+            ).fetchone()
+        return {} if row is None else dict(row)
 
     # Creator Economy v2.5 repositories.
     def create_creator_profile(self, value: dict[str, Any]) -> dict[str, Any]:

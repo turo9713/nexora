@@ -19,6 +19,35 @@ Built-ins:
 - `github-assistant`: Developer agent, workspace read-only, disabled initially.
 - `analytics`: Analytics agent, read-only data scope, disabled initially.
 
+Reviewed read-only skills, disabled by default:
+
+- `secure-code-review`
+- `runtime-testing-patterns`
+- `e2e-testing-patterns`
+- `technical-documentation`
+- `diagram-maker`
+- `markdown-authoring`
+- `project-documentation`
+- `api-design-review`
+- `python-quality`
+- `threat-modeling`
+- `database-design-review`
+- `architecture-review`
+- `accessibility-review`
+
+These manifests contain no third-party executable files. They adapt reviewed
+methodologies into Nexora's existing declarative permission model. Activation
+must use the existing approval-controlled registry flow; registration alone
+does not enable them.
+
+The first reviewed methodology set maps documentation to Developer, Markdown
+drafting to Content, and unit/integration plus E2E test design to QA. Diagram
+generation is limited to a text specification returned by the agent; it does
+not invoke an external renderer. The source reviews covered the official
+OpenClaw documentation and diagram workflows plus the ClawHub testing and
+Markdown methodology packages. No upstream scripts or dependencies were
+copied into Nexora.
+
 Dashboard actions never mutate state immediately. They create a task and a
 one-time approval bound to the dashboard session and existing ApprovalService.
 The approved action is rechecked by Policy Engine before execution.

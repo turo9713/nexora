@@ -149,6 +149,119 @@ async function operationsAnalyticsPage(){title("Operations Analytics");activate(
 
 async function onboardingPage(){title("Первый запуск");activate("/home");clear();const c=card("Welcome to Nexora",true);c.classList.add("full","onboarding");[["1","Выберите Workspace","Работайте только в нужном изолированном пространстве.","/workspace"],["2","Выберите Template","Используйте проверенный шаблон без расширения разрешений.","/templates"],["3","Создайте первую задачу","Откройте Task Center и следуйте безопасному сценарию.","/tasks"],["4","Проверьте результат","Статус, события и результат доступны в карточке задачи.","/tasks"]].forEach(([number,label,description,path])=>{const step=node("button",undefined,"onboarding-step");step.append(node("span",number,"step-number"),node("strong",label),node("small",description,"muted"));step.onclick=()=>navigate(path);c.append(step)});c.append(node("p","Onboarding не запускает внешние интеграции, публикации или production-действия.","muted"));el("content").append(c)}
 
+function requestKey(prefix="web"){
+  const suffix=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${suffix}`;
+}
+
+function taskProgress(item){
+  const wrap=node("div",undefined,"workbench-progress");
+  const labels=node("div",undefined,"workbench-progress-labels");
+  labels.append(node("strong",item.stage||item.status||"NEW"),node("span",`${Number(item.progress||0)}%`));
+  const track=node("div",undefined,"progress-track");
+  const value=node("span",undefined,"progress-value");
+  value.style.width=`${Math.max(0,Math.min(100,Number(item.progress||0)))}%`;
+  track.append(value);wrap.append(labels,track);return wrap;
+}
+
+function taskSummaryRow(item){
+  const row=node("button",undefined,"workbench-task-row");row.type="button";
+  const info=node("div");info.append(node("strong",item.title||item.task_id),node("small",`${item.assigned_agent||"Orchestrator"} · ${fmt(item.updated_at)}`,"muted"));
+  const meta=node("div",undefined,"task-row-meta");meta.append(badge(item.status),node("span",`${item.progress||0}%`));
+  row.append(info,meta);row.onclick=()=>navigate(`/workbench/tasks/${encodeURIComponent(item.task_id)}`);return row;
+}
+
+async function workbenchPage(){
+  title("Nexora Workbench");activate("/workbench");
+  const [summary,tasks]=await Promise.all([api("/api/dashboard"),api("/api/tasks?limit=6")]);
+  clear();
+  const hero=node("section",undefined,"workbench-hero");
+  const copy=node("div",undefined,"workbench-copy");
+  copy.append(node("p","NEXORA AGENT WORKBENCH","eyebrow"),node("h2","Опишите результат — агенты соберут рабочий план"),node("p","Задача проходит через Orchestrator, Policy Engine и существующий runtime. Опасные действия по-прежнему требуют отдельного подтверждения.","muted"));
+  const form=node("form",undefined,"workbench-composer");
+  const input=node("textarea");input.name="message";input.placeholder="Например: проанализируй идею Telegram-бота для учёта расходов и подготовь план MVP";input.maxLength=12000;input.required=true;
+  const submit=node("button","Запустить агентов","primary");submit.type="submit";
+  const hint=node("small",`Workspace: ${summary.workspace.name} · production-действия не выполняются без approval`,"muted");
+  form.append(input,submit,hint);
+  form.onsubmit=async event=>{event.preventDefault();const message=input.value.trim();if(!message)return;submit.disabled=true;submit.textContent="Создаём задачу…";try{const result=await api("/api/workbench/tasks",{method:"POST",body:JSON.stringify({message,workspace_id:summary.workspace.id,idempotency_key:requestKey("task")})});navigate(`/workbench/tasks/${encodeURIComponent(result.task_id||result.id)}`)}catch(error){submit.disabled=false;submit.textContent="Запустить агентов";alert(error.message)}};
+  const suggestions=node("div",undefined,"prompt-suggestions");
+  ["Подготовь план запуска SaaS-продукта","Проанализируй архитектуру проекта и найди риски","Создай структуру статьи и чек-лист качества"].forEach(text=>{const button=node("button",text,"prompt-chip");button.type="button";button.onclick=()=>{input.value=text;input.focus()};suggestions.append(button)});
+  form.append(suggestions);hero.append(copy,form);
+  const recent=card("Последние задачи",true);recent.classList.add("full","workbench-recent");
+  (tasks.items||[]).forEach(item=>recent.append(taskSummaryRow(item)));
+  if(!tasks.items?.length)recent.append(node("div","Здесь появятся выполненные и активные задачи.","empty"));
+  el("content").append(hero,recent);
+}
+
+async function workbenchTaskPage(id){
+  title("Выполнение задачи");activate("/workbench");
+  const encoded=encodeURIComponent(id);
+  const [summary,item,timeline]=await Promise.all([api("/api/dashboard"),api(`/api/tasks/${encoded}`),api(`/api/tasks/${encoded}/events`)]);
+  clear();
+  const header=node("section",undefined,"workbench-task-header");
+  const identity=node("div");identity.append(node("p",item.task_id,"eyebrow"),node("h2",item.title||"Задача Nexora"),node("p",item.description||"Описание задачи","muted"));
+  const status=node("div",undefined,"workbench-task-status");status.append(badge(item.status),taskProgress(item));header.append(identity,status);
+  const layout=node("div",undefined,"workbench-layout");
+  const result=card(item.status==="COMPLETED"?"Готовый результат":"Ход выполнения",true);result.classList.add("workbench-result");
+  if(item.status==="COMPLETED")result.append(node("pre",item.result_summary||"Задача завершена без текстового результата."));
+  else if(item.status==="FAILED")result.append(node("p",`Задача остановлена. Код: ${item.error_code||"NX_INTERNAL_ERROR"}`,"danger"));
+  else if(item.status==="CANCELLED")result.append(node("p","Задача отменена. Уже созданные результаты не удалялись.","muted"));
+  else result.append(node("div","Агенты выполняют задачу. Значимые этапы появятся здесь автоматически.","workbench-running"));
+  const actionBar=node("div",undefined,"actions");
+  if((item.downloads||[]).length){const download=node("a","Скачать результат .txt","button-link");download.href=`/api/tasks/${encoded}/downloads/result`;download.download=item.downloads[0].name;actionBar.append(download)}
+  if(item.status==="WAITING_APPROVAL"){const approval=node("button","Открыть подтверждение","primary");approval.onclick=()=>navigate("/approvals");actionBar.append(approval)}
+  if(["NEW","CLARIFYING","QUEUED","PLANNING","IN_PROGRESS","WAITING_APPROVAL"].includes(item.status)){const cancel=node("button","Отменить задачу","secondary");cancel.onclick=async()=>{if(!confirm("Отменить текущую задачу? Созданные результаты удалены не будут."))return;cancel.disabled=true;try{await api(`/api/workbench/tasks/${encoded}/cancel`,{method:"POST",body:JSON.stringify({workspace_id:summary.workspace.id})});await workbenchTaskPage(id)}catch(error){cancel.disabled=false;alert(error.message)}};actionBar.append(cancel)}
+  if(item.status==="COMPLETED"){const follow=node("form",undefined,"workbench-followup");const message=node("textarea");message.placeholder="Уточните или продолжите задачу…";message.maxLength=12000;message.required=true;const send=node("button","Продолжить","primary");follow.append(message,send);follow.onsubmit=async event=>{event.preventDefault();send.disabled=true;try{await api(`/api/workbench/tasks/${encoded}/messages`,{method:"POST",body:JSON.stringify({message:message.value,workspace_id:summary.workspace.id,idempotency_key:requestKey("message")})});await workbenchTaskPage(id)}catch(error){send.disabled=false;alert(error.message)}};result.append(follow)}
+  result.append(actionBar);
+  const timelineCard=card("Этапы",true);timelineCard.classList.add("workbench-timeline");
+  (timeline.items||[]).forEach(event=>timelineCard.append(feedRow({message:event.type,resource_id:event.agent||event.workflow,stage:event.stage,progress:event.progress,timestamp:event.timestamp})));
+  if(!timeline.items?.length)timelineCard.append(node("div","События появятся после запуска workflow.","empty"));
+  layout.append(result,timelineCard);el("content").append(header,layout);
+  state.realtimeCallback=event=>{if(event?.task_id===id)workbenchTaskPage(id).catch(errorView)};
+  connectRealtime(summary.workspace.id,summary.realtime_cursor);
+}
+
+const WORKFORCE_CATEGORIES=["","business","marketing","development","analytics","support","hr","finance","automation","content"];
+const WORKFORCE_KIND={employees:"EMPLOYEE",workflows:"WORKFLOW",skills:"SKILL"};
+
+function workforcePrice(item){return Number(item.price_cents||0)===0?"Free":`${(Number(item.price_cents)/100).toFixed(2)} ${item.currency||"USD"}`}
+function workforceCard(item,workspaceId){
+  const c=card(item.name);c.classList.add("marketplace-v4-card");
+  const badges=node("div",undefined,"actions");badges.append(badge(item.listing_kind),badge(item.risk_level),badge(workforcePrice(item)));c.append(badges);
+  c.append(node("p",item.description),node("p",`${item.author} · v${item.version} · ${item.downloads||0} установок`,"muted"),node("p",(item.tags||[]).join(" · "),"muted"));
+  const footer=node("div",undefined,"marketplace-card-footer");footer.append(node("strong",item.installation_status==="ACTIVE"?"Установлен":workforcePrice(item)));
+  const open=node("button","Подробнее","secondary");open.onclick=()=>navigate(`/marketplace/item/${encodeURIComponent(item.id)}`);footer.append(open);c.append(footer);return c;
+}
+
+async function workforceMarketplacePage(kind="EMPLOYEE"){
+  const routePath=kind==="WORKFLOW"?"/marketplace/workflows":kind==="SKILL"?"/marketplace/skills":"/marketplace";
+  title(kind==="WORKFLOW"?"Workflow Store":kind==="SKILL"?"Skill Store":"AI Workforce Marketplace");activate(routePath);
+  const summary=await api("/api/dashboard");clear();
+  const hero=node("section",undefined,"marketplace-v4-hero");hero.append(node("p","NEXORA MARKETPLACE","eyebrow"),node("h2",kind==="EMPLOYEE"?"Наймите готового AI-сотрудника":kind==="WORKFLOW"?"Установите готовый процесс":"Расширьте возможности команды"),node("p","Проверенные декларативные пакеты. Без shell, Docker socket и прямого доступа к секретам.","muted"));
+  const filters=node("form",undefined,"marketplace-filters");const search=node("input");search.placeholder="Поиск";const category=node("select");WORKFORCE_CATEGORIES.forEach(value=>{const option=node("option",value?value[0].toUpperCase()+value.slice(1):"Все категории");option.value=value;category.append(option)});filters.append(search,category,node("button","Найти","secondary"));
+  const grid=node("div",undefined,"grid marketplace-v4-grid");el("content").append(hero,filters,grid);
+  async function load(event){if(event)event.preventDefault();const q=new URLSearchParams({workspace_id:summary.workspace.id,kind});if(search.value.trim())q.set("search",search.value.trim());if(category.value)q.set("category",category.value);const data=await api("/api/workforce/catalog?"+q);grid.replaceChildren(...(data.items||[]).map(item=>workforceCard(item,summary.workspace.id)));if(!data.items?.length)grid.append(node("div","Ничего не найдено","empty"))}
+  filters.onsubmit=load;await load();
+}
+
+async function workforceItemPage(id){
+  title("Marketplace Package");activate("/marketplace");const summary=await api("/api/dashboard");const q=`workspace_id=${encodeURIComponent(summary.workspace.id)}`;const item=await api(`/api/workforce/catalog/${encodeURIComponent(id)}?${q}`);clear();
+  const hero=node("section",undefined,"marketplace-item-hero");const main=node("div");main.append(node("p",`${item.listing_kind} · ${item.category}`,"eyebrow"),node("h2",item.name),node("p",item.description),node("p",`${item.author} · v${item.version} · рейтинг ${item.rating||"—"} · ${item.downloads||0} установок`,"muted"));const price=node("div",undefined,"marketplace-price");price.append(node("strong",workforcePrice(item)),badge(item.risk_level));hero.append(main,price);
+  const details=node("div",undefined,"workforce-details");const permissions=card("Разрешения");permissions.append(node("pre",JSON.stringify(item.manifest.permissions,null,2)));const compatibility=card("Совместимость");compatibility.append(node("pre",JSON.stringify(item.compatibility,null,2)));const changelog=card("Changelog");changelog.append(node("p",item.changelog||"Нет записей","muted"));details.append(permissions,compatibility,changelog);
+  const actions=card("Установка",true);actions.classList.add("full");const installation=item.installation;const install=node("button",installation?.status==="ACTIVE"?"Обновить":"Установить","primary");install.onclick=async()=>{install.disabled=true;try{const response=await api(`/api/workforce/${item.id}/${installation?.status==="ACTIVE"?"update":"install"}`,{method:"POST",body:JSON.stringify({workspace_id:summary.workspace.id,version:item.version,auto_update:false})});if(response.approval_id){alert(`Требуется подтверждение ${response.approval_id}`);navigate("/approvals")}else{alert("Установлено");await workforceItemPage(id)}}catch(error){alert(error.message);install.disabled=false}};actions.append(install);
+  if(installation?.status==="ACTIVE"){const remove=node("button","Удалить","secondary");remove.onclick=async()=>{const response=await api(`/api/workforce/${item.id}/uninstall`,{method:"POST",body:JSON.stringify({workspace_id:summary.workspace.id})});alert(`Требуется подтверждение ${response.approval_id}`);navigate("/approvals")};actions.append(remove);const wizard=node("div",undefined,"integration-wizard");wizard.append(node("h3","Подключить интеграцию"));const provider=node("select");["TELEGRAM","EMAIL","GOOGLE","SLACK","GITHUB","WEBHOOK","API_KEY"].forEach(value=>{const option=node("option",value);option.value=value;provider.append(option)});const reference=node("input");reference.placeholder="SECRET_REFERENCE (без значения секрета)";const connect=node("button","Запросить подключение","secondary");connect.onclick=async()=>{connect.disabled=true;try{const response=await api(`/api/workforce/${item.id}/integration`,{method:"POST",body:JSON.stringify({workspace_id:summary.workspace.id,provider:provider.value,secret_reference:reference.value,configuration:{mode:"workspace"}})});alert(`Требуется подтверждение ${response.approval_id}`);navigate("/approvals")}catch(error){alert(error.message);connect.disabled=false}};wizard.append(provider,reference,connect);actions.append(wizard)}
+  el("content").append(hero,details,actions);
+}
+
+async function aiTeamPage(){
+  title("My AI Team");activate("/ai-team");const summary=await api("/api/dashboard");const data=await api(`/api/workforce/team?workspace_id=${encodeURIComponent(summary.workspace.id)}`);clear();
+  const hero=card(`AI Team · ${summary.workspace.name}`,true);hero.classList.add("full");hero.append(node("p","Установленные сотрудники изолированы внутри текущего workspace.","muted"));const grid=node("div",undefined,"grid marketplace-v4-grid");(data.items||[]).forEach(item=>{const c=card(item.name);c.append(badge(item.status),badge(item.load),node("p",`Версия ${item.version} · задач ${item.tasks}`,"muted"),node("p",`Успешность ${item.success_rate}% · ошибок ${item.errors}`),node("p",`Memory: ${item.memory} · стоимость ${(item.cost_cents/100).toFixed(2)} USD`,"muted"));grid.append(c)});if(!data.items?.length)grid.append(node("div","Команда пока пуста. Установите сотрудника в Marketplace.","empty"));el("content").append(hero,grid);
+}
+
+async function developerPortalPage(){
+  title("Developer Portal");activate("/developer");const data=await api("/api/workforce/developer");clear();const overview=card("Creator Analytics",true);overview.classList.add("full");overview.append(node("p","Платежи отключены. Отображаются только расчётные показатели будущей revenue-sharing модели.","muted"));const metrics=node("div",undefined,"metrics operations-metrics");const packages=data.packages||[];const earnings=(data.earnings||[]).reduce((sum,item)=>sum+Number(item.creator_cents||0),0);metrics.append(metric("Packages",packages.length),metric("Commission",`${data.commission_bps/100}%`),metric("Estimated earnings",`${(earnings/100).toFixed(2)} USD`),metric("Payments","OFF"));overview.append(metrics);const list=card("My Packages",true);list.classList.add("full");packages.forEach(item=>{const row=node("div",undefined,"health-row");row.append(node("span",`${item.name} · v${item.version}`),badge(item.status));list.append(row)});if(!packages.length)list.append(node("div","Создайте профиль автора и опубликуйте первый декларативный пакет.","empty"));el("content").append(overview,list);
+}
+
 async function enterpriseScope(){const data=await api("/api/dashboard");return `workspace_id=${encodeURIComponent(data.workspace.id)}`}
 async function securityCenterPage(){title("Enterprise Security Center");activate("/security-center");const q=await enterpriseScope();const [data,events]=await Promise.all([api(`/api/enterprise/security-center?${q}`),api(`/api/enterprise/security-events?${q}&limit=20`)]);clear();const overview=card("Security Overview",true);overview.classList.add("full");const values=node("div",undefined,"metrics operations-metrics");values.append(metric("Users",data.users),metric("Policies",data.policies),metric("Active Agents",data.active_agents),metric("Security Events",data.security_events),metric("Risk Level",data.risk_level));overview.append(values);const audit=card("Advanced Audit",true);audit.classList.add("full");(events.items||[]).forEach(item=>{const row=node("div",undefined,"health-row");row.append(node("span",`${item.action} · ${item.resource}`),badge(item.result),badge(item.risk_level),node("small",fmt(item.created_at),"muted"));audit.append(row)});if(!events.items.length)audit.append(node("div","No enterprise security events","empty"));audit.append(node("p",`Hash chain: ${events.chain_valid?"VALID":"INVALID"}`,events.chain_valid?"muted":"danger"));el("content").append(overview,audit)}
 async function policiesPage(){title("Enterprise Policies");activate("/policies");const q=await enterpriseScope();const data=await api(`/api/enterprise/policies?${q}`);clear();const c=card("Policy Management",true);c.classList.add("full");(data.items||[]).forEach(item=>{const row=node("div",undefined,"approval-row");const info=node("div");info.append(node("strong",item.name),node("p",`${item.type} · version ${item.current_version}`,"muted"));row.append(info,badge(item.status));c.append(row)});if(!data.items.length)c.append(node("div","No organization policies. Changes require owner approval.","empty"));c.append(node("p","Policy changes are versioned and cannot be applied from this read-only view.","muted"));el("content").append(c)}
@@ -157,7 +270,7 @@ async function storageHealthPage(){title("Storage Observability");activate("/sto
 async function enterprisePage(){title("Enterprise Operations");activate("/enterprise");const q=await enterpriseScope();const [profiles,sso,compliance]=await Promise.all([api(`/api/enterprise/deployment-profiles?${q}`),api(`/api/enterprise/sso?${q}`),api(`/api/enterprise/compliance?${q}`)]);clear();const identity=card("Identity Foundation");identity.append(node("p",`External provider configured: ${sso.configured?"YES":"NO"}`,"muted"));sso.providers.forEach(item=>{const row=node("div",undefined,"health-row");row.append(node("span",item.type),badge(item.enabled?"ENABLED":"DISABLED"));identity.append(row)});const deployment=card("Deployment Profiles",true);(profiles.items||[]).forEach(item=>{const row=node("div",undefined,"health-row");row.append(node("span",item.name),badge(item.status));deployment.append(row)});const controls=card("Compliance Foundation",true);Object.entries(compliance.controls||{}).forEach(([key,value])=>{const row=node("div",undefined,"health-row");row.append(node("span",key.replaceAll("_"," ")),badge(value?"PASS":"FAIL"));controls.append(row)});controls.append(node("p","Foundation only; no certification is claimed.","muted"));const grid=node("div",undefined,"grid");grid.append(identity,deployment,controls);el("content").append(grid)}
 
 const routeV34=route;
-route=async function(){const path=location.pathname;state.realtimeCallback=null;try{if(path==="/home")return await homePage();if(path==="/activity")return await activityPage();if(path==="/notifications")return await notificationsPage();if(path==="/workspace")return await workspaceOverviewPage();if(path==="/agents/status")return await agentStatusPage();if(path==="/analytics")return await operationsAnalyticsPage();if(path==="/onboarding")return await onboardingPage();if(path==="/security-center")return await securityCenterPage();if(path==="/policies")return await policiesPage();if(path==="/sla")return await slaPage();if(path==="/storage-health")return await storageHealthPage();if(path==="/enterprise")return await enterprisePage();return await routeV34()}catch(error){if(error.message!=="UNAUTHORIZED")errorView(error)}};
+route=async function(){const path=location.pathname;state.realtimeCallback=null;try{if(path==="/marketplace")return await workforceMarketplacePage("EMPLOYEE");if(path==="/marketplace/workflows")return await workforceMarketplacePage("WORKFLOW");if(path==="/marketplace/skills")return await workforceMarketplacePage("SKILL");if(path.startsWith("/marketplace/item/"))return await workforceItemPage(decodeURIComponent(path.slice(18)));if(path==="/ai-team")return await aiTeamPage();if(path==="/developer")return await developerPortalPage();if(path==="/workbench")return await workbenchPage();if(path.startsWith("/workbench/tasks/"))return await workbenchTaskPage(decodeURIComponent(path.slice(17)));if(path==="/home")return await homePage();if(path==="/activity")return await activityPage();if(path==="/notifications")return await notificationsPage();if(path==="/workspace")return await workspaceOverviewPage();if(path==="/agents/status")return await agentStatusPage();if(path==="/analytics")return await operationsAnalyticsPage();if(path==="/onboarding")return await onboardingPage();if(path==="/security-center")return await securityCenterPage();if(path==="/policies")return await policiesPage();if(path==="/sla")return await slaPage();if(path==="/storage-health")return await storageHealthPage();if(path==="/enterprise")return await enterprisePage();return await routeV34()}catch(error){if(error.message!=="UNAUTHORIZED")errorView(error)}};
 
 function navigate(path){history.pushState({},"",path);route()}
 document.addEventListener("click",event=>{const link=event.target.closest("a[data-route]");if(link){event.preventDefault();navigate(link.getAttribute("href"))}});window.addEventListener("popstate",route);

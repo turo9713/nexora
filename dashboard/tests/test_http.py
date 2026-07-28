@@ -5,6 +5,7 @@ import json
 import threading
 
 from nexora.dashboard.backend.server import COOKIE_NAME, DashboardRequestHandler
+from nexora.skills.registry.registry import BUILTIN_SKILLS
 
 from .conftest import ORIGIN, PASSWORD
 
@@ -63,12 +64,12 @@ def test_authenticated_http_api_csrf_headers_and_logout(dashboard_factory) -> No
 
         response, data = request(connection, "GET", "/api/health", cookie=cookie)
         assert response.status == 200 and data["database"] == "OK"
-        assert data["skills"]["loaded"] == 5
+        assert data["skills"]["loaded"] == len(BUILTIN_SKILLS)
         assert response.getheader("Content-Security-Policy")
         assert response.getheader("X-Frame-Options") == "DENY"
 
         response, data = request(connection, "GET", "/api/skills", cookie=cookie)
-        assert response.status == 200 and len(data["items"]) == 5
+        assert response.status == 200 and len(data["items"]) == len(BUILTIN_SKILLS)
 
         response, data = request(connection, "GET", "/api/agents", cookie=cookie)
         assert response.status == 200 and len(data["items"]) == 8

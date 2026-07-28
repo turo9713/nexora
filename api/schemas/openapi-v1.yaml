@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 3.5.0
+  version: 4.0.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
@@ -257,6 +257,61 @@ paths:
       operationId: publishMarketplaceItem
       responses:
         "201": {description: Declarative package validated and published}
+  /workforce:
+    get:
+      operationId: listAIWorkforce
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+        - {name: category, in: query, required: false, schema: {type: string}}
+        - {name: type, in: query, required: false, schema: {type: string, enum: [AGENT, SKILL, TEMPLATE]}}
+        - {name: search, in: query, required: false, schema: {type: string, maxLength: 100}}
+      responses:
+        "200": {description: Security-validated AI employees, skills, and workflow packs}
+  /workforce/team:
+    get:
+      operationId: listInstalledAIEmployees
+      parameters:
+        - {name: workspace_id, in: query, required: true, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+      responses:
+        "200": {description: Tenant-scoped installed AI team with usage summaries}
+  /workforce/{id}:
+    get:
+      operationId: getAIWorkforcePackage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^[a-z0-9][a-z0-9-]{1,62}$"}}
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+      responses:
+        "200": {description: Sanitized package card, compatibility, permissions, and documentation}
+        "404": {description: Package not found or unavailable}
+  /workforce/{id}/install:
+    post:
+      operationId: installAIWorkforcePackage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "201": {description: Package and declarative workspace resources installed}
+        "202": {description: Approval required}
+  /workforce/{id}/update:
+    post:
+      operationId: updateAIWorkforcePackage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Compatible package update applied with rollback state preserved}
+  /workforce/{id}/uninstall:
+    post:
+      operationId: uninstallAIWorkforcePackage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "202": {description: One-time approval required before uninstall}
+  /workforce/{id}/integration:
+    post:
+      operationId: configureAIWorkforceIntegration
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "202": {description: Protected secret reference accepted; activation requires approval}
   /policies:
     get:
       operationId: listEnterprisePolicies

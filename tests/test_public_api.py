@@ -417,7 +417,14 @@ def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path
         response, data = request(connection, "GET", f"/api/v1/knowledge?workspace_id={workspace['id']}", key=full_key)
         assert response.status == 200 and data["items"][0]["name"] == "API Guide"
         response, data = request(connection, "GET", "/api/v1/plans", key=full_key)
-        assert response.status == 200 and [item["id"] for item in data["items"]] == ["free", "pro", "team", "enterprise"]
+        assert response.status == 200 and [item["id"] for item in data["items"]] == [
+            "free",
+            "starter",
+            "pro",
+            "team",
+            "business",
+            "enterprise",
+        ]
         response, data = request(connection, "GET", f"/api/v1/subscription?organization_id={organization['id']}", key=full_key)
         assert response.status == 200 and data["plan_id"] == "free"
         response, data = request(connection, "POST", "/api/v1/subscription", key=full_key, body={"plan_id": "enterprise"})

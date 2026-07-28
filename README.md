@@ -234,6 +234,21 @@ Dashboard routes are `/security-center`, `/policies`, `/sla`,
 `enterprise:read` scope. See [docs/enterprise.md](docs/enterprise.md) and
 [docs/policies.md](docs/policies.md).
 
+## AI Workforce Marketplace (v4.0)
+
+Install validated AI employees, workflow packs, and skills from the
+authenticated Marketplace without editing YAML. One-click installation creates
+tenant-scoped memory, permission, prompt, workflow, setting, and workspace
+bindings; it never executes arbitrary package code. Use `/marketplace`,
+`/marketplace/workflows`, `/marketplace/skills`, `/ai-team`, and `/developer`.
+
+Integrations accept protected secret references only and activate through the
+existing one-time approval flow. OpenClaw Gateway remains private and is never
+called by Dashboard frontend or Marketplace APIs. See
+[AI Workforce Marketplace](docs/ai-workforce-marketplace.md),
+[v4 architecture and ER diagram](docs/architecture-v4.md), and
+[deployment and rollback](docs/deployment-v4.md).
+
 ## Development
 
 ```bash
@@ -250,9 +265,10 @@ and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Roadmap
 
-- **v3.1:** curated declarative agent/team bundles.
-- **v3.5:** expanded evaluation datasets and policy simulations.
-- **v4.0:** optional managed control plane while preserving self-hosting.
+- **v4.1:** signed package provenance, staged tenant rollouts, compatibility
+  preview, and administrator-controlled update channels.
+- **v4.2:** integration health observability and portable workforce bundles.
+- **v5.0:** optional managed control plane while preserving self-hosting.
 
 ## Release and rollback
 

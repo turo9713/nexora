@@ -40,7 +40,7 @@ def platform(tmp_path: Path):
 def test_builtin_templates_validate_and_cannot_expand_permissions(tmp_path: Path) -> None:
     database, registry, _, _ = platform(tmp_path)
     assert registry.health() == {"ok": True, "loaded": 5, "active": 4}
-    assert database.schema_version() == 12
+    assert database.schema_version() == 13
     for item in registry.list():
         assert item["permissions"]["production"] is False
         assert item["permissions"]["level"] in {"LOW", "MEDIUM"}
@@ -94,7 +94,8 @@ def test_migration_005_is_reversible_and_preserves_prior_data(tmp_path: Path) ->
     registry.install(OWNER, "code-review")
     with sqlite3.connect(database.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM templates").fetchone()[0] == 5
-        assert connection.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 18
+    database.rollback(13)
     database.rollback(12)
     database.rollback(11)
     database.rollback(10)
@@ -105,7 +106,7 @@ def test_migration_005_is_reversible_and_preserves_prior_data(tmp_path: Path) ->
     database.rollback(5)
     assert database.schema_version() == 4
     with sqlite3.connect(database.path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 5
+        assert connection.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 18
         assert connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 

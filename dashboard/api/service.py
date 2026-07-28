@@ -27,6 +27,7 @@ from nexora.creators import CreatorError, CreatorService
 from nexora.dashboard.runtime import DashboardTaskRuntime, DashboardTaskRuntimeError
 from nexora.operations import OperationsAccessDenied, OperationsService, OperationsValidationError
 from nexora.enterprise import EnterpriseAccessDenied, EnterpriseService, EnterpriseValidationError
+from nexora.workforce import AIWorkforceError, AIWorkforceService
 
 
 TASK_STATUSES = {
@@ -71,6 +72,7 @@ class DashboardAPI:
         task_runtime: DashboardTaskRuntime | None = None,
         operations: OperationsService | None = None,
         enterprise: EnterpriseService | None = None,
+        workforce: AIWorkforceService | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -95,6 +97,7 @@ class DashboardAPI:
         self.task_runtime = task_runtime
         self.operations = operations
         self.enterprise = enterprise
+        self.workforce = workforce
         self.task_read_model = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, Any]:
@@ -113,6 +116,7 @@ class DashboardAPI:
             },
             "billing": "OK" if self.billing is not None else "WARNING",
             "marketplace": "OK" if self.marketplace is not None and self.database.schema_version() >= 8 else "ERROR",
+            "workforce": "OK" if self.workforce is not None and self.database.schema_version() >= 13 else "ERROR",
             "creators": "OK" if self.creators is not None and self.database.schema_version() >= 9 else "ERROR",
             "agent_ecosystem": "OK" if self.ecosystem is not None and self.database.schema_version() >= 10 else "ERROR",
             "api": self._health_value(status.get("api")),
@@ -313,8 +317,14 @@ class DashboardAPI:
 
     def create_dashboard_task(self, value: dict[str, Any]) -> dict[str, Any]:
         runtime = self._task_runtime()
+        workspace = self._dashboard_workspace_context(value)
         try:
-            task = runtime.create(self.namespace, value.get("message"), value.get("idempotency_key"))
+            task = runtime.create(
+                self.namespace,
+                value.get("message"),
+                value.get("idempotency_key"),
+                workspace,
+            )
         except DashboardTaskRuntimeError as exc:
             raise DashboardAPIError(exc.status, exc.code, exc.message) from exc
         stored = self.database.get_task_details(self.namespace, str(task["task_id"]))
@@ -322,17 +332,25 @@ class DashboardAPI:
 
     def continue_dashboard_task(self, task_id: str, value: dict[str, Any]) -> dict[str, Any]:
         runtime = self._task_runtime()
+        workspace = self._dashboard_workspace_context(value)
         try:
-            task = runtime.continue_task(self.namespace, task_id, value.get("message"), value.get("idempotency_key"))
+            task = runtime.continue_task(
+                self.namespace,
+                task_id,
+                value.get("message"),
+                value.get("idempotency_key"),
+                workspace,
+            )
         except DashboardTaskRuntimeError as exc:
             raise DashboardAPIError(exc.status, exc.code, exc.message) from exc
         stored = self.database.get_task_details(self.namespace, str(task["task_id"]))
         return self._safe_task(stored or {"id": task["task_id"], **task})
 
-    def cancel_dashboard_task(self, task_id: str) -> dict[str, Any]:
+    def cancel_dashboard_task(self, task_id: str, value: dict[str, Any] | None = None) -> dict[str, Any]:
         runtime = self._task_runtime()
+        workspace = self._dashboard_workspace_context(value or {})
         try:
-            task = runtime.cancel(self.namespace, task_id)
+            task = runtime.cancel(self.namespace, task_id, workspace)
         except DashboardTaskRuntimeError as exc:
             raise DashboardAPIError(exc.status, exc.code, exc.message) from exc
         stored = self.database.get_task_details(self.namespace, str(task["task_id"]))
@@ -348,6 +366,28 @@ class DashboardAPI:
         title = redact_text(task.get("title"), 200)
         content = f"Nexora task {task_id}\nTitle: {title}\nStatus: {task.get('status')}\n\n{result}\n"
         return f"{task_id}-result.txt", content.encode("utf-8")
+
+    def _dashboard_workspace_context(self, value: dict[str, Any]) -> dict[str, Any]:
+        if self.teams is None:
+            raise DashboardAPIError(503, "NX_WORKSPACE_REQUIRED", "Workspace недоступен")
+        requested = str(value.get("workspace_id") or "").strip()
+        workspaces = self.teams.list_workspaces(self.namespace)
+        selected: dict[str, Any] | None = None
+        if requested:
+            selected = next((item for item in workspaces if str(item.get("id")) == requested), None)
+        elif len(workspaces) == 1:
+            selected = workspaces[0]
+        else:
+            personal = [item for item in workspaces if item.get("name") == "Personal Workspace"]
+            selected = personal[0] if len(personal) == 1 else None
+        if selected is None:
+            raise DashboardAPIError(400, "NX_WORKSPACE_REQUIRED", "Выберите доступный workspace")
+        workspace_id = str(selected["id"])
+        try:
+            context = self.teams.workspace_context(self.namespace, workspace_id, "tasks:create")
+        except TeamAccessDenied as exc:
+            raise DashboardAPIError(404, "NX_WORKSPACE_REQUIRED", "Workspace недоступен") from exc
+        return {**context, "workspace_id": workspace_id}
 
     def list_agents(self) -> dict[str, Any]:
         return {"items": [self._agent_card(manifest.id) for manifest in self.registry.all()]}
@@ -553,6 +593,74 @@ class DashboardAPI:
             selected = version or details["version"]
             approval = self._management_approval(session_id, f"marketplace:install:{workspace_id}:{item_id}:{selected}", f"Install marketplace item {item_id} {selected}", "Reviewed permissions will be activated only inside the selected workspace.")
             return {"item_id": item_id, "workspace_id": workspace_id, "version": selected, "status": "WAITING_APPROVAL", **approval}
+
+    def workforce_catalog(self, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            return {"items": self._workforce().catalog(
+                self.namespace,
+                workspace_id=query.get("workspace_id") or None,
+                search=query.get("search") or None,
+                category=query.get("category") or None,
+                kind=query.get("kind") or None,
+            )}
+        except AIWorkforceError as exc:
+            raise DashboardAPIError(400, exc.code, "Marketplace filter rejected") from exc
+
+    def workforce_item(self, item_id: str, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            return self._workforce().item(self.namespace, item_id, workspace_id=query.get("workspace_id") or None)
+        except (AIWorkforceError, MarketplaceError) as exc:
+            raise DashboardAPIError(404, getattr(exc, "code", "MARKETPLACE_ITEM_NOT_FOUND"), "Marketplace item unavailable") from exc
+
+    def workforce_team(self, query: dict[str, str]) -> dict[str, Any]:
+        workspace_id = str(query.get("workspace_id") or "")
+        if not workspace_id:
+            raise DashboardAPIError(400, "WORKSPACE_REQUIRED", "workspace_id is required")
+        try:
+            return {"items": self._workforce().team(self.namespace, workspace_id)}
+        except AIWorkforceError as exc:
+            raise DashboardAPIError(404, exc.code, "Workspace unavailable") from exc
+
+    def workforce_developer_portal(self) -> dict[str, Any]:
+        return self._workforce().developer_portal(self.namespace)
+
+    def request_workforce_install(self, item_id: str, value: dict[str, Any], session_id: str) -> dict[str, Any]:
+        workspace_id = str(value.get("workspace_id") or "")
+        version = str(value.get("version") or "") or None
+        if not workspace_id:
+            raise DashboardAPIError(400, "WORKSPACE_REQUIRED", "workspace_id is required")
+        try:
+            return self._workforce().install(self.namespace, workspace_id, item_id, version=version, auto_update=bool(value.get("auto_update")))
+        except MarketplaceError as exc:
+            if exc.code != "MARKETPLACE_APPROVAL_REQUIRED":
+                raise DashboardAPIError(403, exc.code, "Installation denied") from exc
+            details = self._workforce().item(self.namespace, item_id, workspace_id=workspace_id)
+            selected = version or str(details["version"])
+            approval = self._management_approval(session_id, f"marketplace:install:{workspace_id}:{item_id}:{selected}", f"Install {details['name']}", "Permissions and workspace bindings will be activated after approval.")
+            return {"item_id": item_id, "workspace_id": workspace_id, "version": selected, "status": "WAITING_APPROVAL", **approval}
+        except AIWorkforceError as exc:
+            raise DashboardAPIError(403, exc.code, "Installation denied") from exc
+
+    def request_workforce_uninstall(self, item_id: str, value: dict[str, Any], session_id: str) -> dict[str, Any]:
+        workspace_id = str(value.get("workspace_id") or "")
+        if not workspace_id:
+            raise DashboardAPIError(400, "WORKSPACE_REQUIRED", "workspace_id is required")
+        approval = self._management_approval(session_id, f"workforce:uninstall:{workspace_id}:{item_id}", f"Uninstall {item_id}", "Bindings and integrations will be disabled; historical task data remains.")
+        return {"item_id": item_id, "workspace_id": workspace_id, "status": "WAITING_APPROVAL", **approval}
+
+    def request_workforce_integration(self, item_id: str, value: dict[str, Any], session_id: str) -> dict[str, Any]:
+        workspace_id = str(value.get("workspace_id") or "")
+        provider = str(value.get("provider") or "").upper()
+        try:
+            pending = self._workforce().request_integration(
+                self.namespace, workspace_id, item_id, provider,
+                secret_reference=str(value.get("secret_reference") or "") or None,
+                configuration=value.get("configuration") if isinstance(value.get("configuration"), dict) else {},
+            )
+        except AIWorkforceError as exc:
+            raise DashboardAPIError(400, exc.code, "Integration request rejected") from exc
+        approval = self._management_approval(session_id, f"workforce:integration:{workspace_id}:{item_id}:{provider}", f"Connect {provider} to {item_id}", "The connector uses only a protected secret reference and remains workspace-scoped.")
+        return {**pending, "status": "WAITING_APPROVAL", **approval}
 
     def admin_summary(self) -> dict[str, Any]:
         if self.admin_console is None:
@@ -830,6 +938,9 @@ class DashboardAPI:
         elif action_type.startswith("marketplace:"):
             self._execute_marketplace_action(action_type, task_id, approval_id)
             execution = "COMPLETED"
+        elif action_type.startswith("workforce:"):
+            self._execute_workforce_action(action_type, task_id, approval_id)
+            execution = "COMPLETED"
         else:
             execution = "TELEGRAM_RUNTIME_PENDING"
         self.audit.record("APPROVAL_DECISION", source="dashboard_api", action_result="APPROVED", approval_id=approval_id, task_id=task_id)
@@ -875,17 +986,40 @@ class DashboardAPI:
             if len(parts) != 5:
                 raise DashboardAPIError(409, "ACTION_INVALID", "Marketplace action is invalid")
             _, _, workspace_id, item_id, version = parts
-            service.install(self.namespace, workspace_id, item_id, version=version, approval_id=approval_id)
+            if self.workforce is not None and self.database.get_marketplace_metadata(item_id) is not None:
+                self.workforce.install(self.namespace, workspace_id, item_id, version=version, approval_id=approval_id)
+            else:
+                service.install(self.namespace, workspace_id, item_id, version=version, approval_id=approval_id)
             summary = f"Marketplace item {item_id} {version} installed"
         else:
             raise DashboardAPIError(409, "ACTION_INVALID", "Marketplace action is invalid")
         self.tasks.update_fields(self.namespace, task_id, pending_approval_id=None, result_summary=summary)
         self.tasks.transition(self.namespace, task_id, "COMPLETED", event="MARKETPLACE_ACTION_COMPLETED")
 
+    def _execute_workforce_action(self, action_type: str, task_id: str, approval_id: str) -> None:
+        parts = action_type.split(":")
+        if len(parts) == 4 and parts[1] == "uninstall":
+            _, _, workspace_id, item_id = parts
+            result = self._workforce().uninstall(self.namespace, workspace_id, item_id, approval_id=approval_id)
+            summary = f"Workforce item {item_id} uninstalled"
+        elif len(parts) == 5 and parts[1] == "integration":
+            _, _, workspace_id, item_id, provider = parts
+            result = self._workforce().activate_integration(self.namespace, workspace_id, item_id, provider, approval_id=approval_id)
+            summary = f"Integration {provider} activated for {item_id}"
+        else:
+            raise DashboardAPIError(409, "ACTION_INVALID", "Workforce action is invalid")
+        self.tasks.update_fields(self.namespace, task_id, pending_approval_id=None, result_summary=summary)
+        self.tasks.transition(self.namespace, task_id, "COMPLETED", event="WORKFORCE_ACTION_COMPLETED")
+
     def _marketplace(self) -> MarketplaceService:
         if self.marketplace is None:
             raise DashboardAPIError(503, "MARKETPLACE_UNAVAILABLE", "Marketplace unavailable")
         return self.marketplace
+
+    def _workforce(self) -> AIWorkforceService:
+        if self.workforce is None:
+            raise DashboardAPIError(503, "WORKFORCE_UNAVAILABLE", "AI Workforce unavailable")
+        return self.workforce
 
     def _creators(self) -> CreatorService:
         if self.creators is None:

@@ -22,9 +22,22 @@ Task changes reach the browser through authenticated same-origin Server-Sent
 Events at `/api/realtime/tasks`. EventSource reconnects with the last durable
 event ID; every read is filtered by an authorized workspace. No frontend timer
 polls the task API. The stream and JSON endpoints return only bounded,
-allowlisted fields. The only v3.4 mutation is marking a notification as read;
-it requires the Dashboard session, permission check, same-origin CSRF token,
-workspace ownership, and audit event.
+allowlisted fields. Every mutation requires the Dashboard session, permission
+check, same-origin CSRF token, workspace ownership, and an audit event.
+
+## Agent Workbench
+
+`/workbench` is the user-facing task entry point. It creates a task through the
+existing TaskManager, Orchestrator, Policy Engine, Approval Engine, and runtime;
+the browser never calls OpenClaw directly. The task view shows workspace-scoped
+SSE progress, lifecycle events, the sanitized result, and a safe text download.
+Completed tasks can receive a follow-up message, while active tasks can be
+cancelled without deleting existing artifacts.
+
+Mutations exist only under `/api/workbench/tasks`. They require an authenticated
+admin session, exact Origin and CSRF checks, an authorized workspace, and an
+idempotency key. A supplied workspace identifier is never trusted without RBAC
+validation. Dangerous requests still stop at `WAITING_APPROVAL`.
 
 ## Agent Control Center (v3.2)
 
@@ -43,17 +56,16 @@ lifecycle timeline through `GET /api/tasks/{id}/events`; raw event metadata,
 conversation context, credentials, and internal runtime payloads are never
 returned.
 
-The Dashboard has no task create, continue, cancel, shell, service restart, or
-Gateway operation. Existing TaskManager, Orchestrator, WorkflowEngine,
+The `/tasks` surface has no task create, continue, cancel, shell, service
+restart, or Gateway operation. Existing TaskManager, Orchestrator, WorkflowEngine,
 AgentRunner, Policy Engine, and Approval Engine remain unchanged. Result files
 are available only as sanitized read-only downloads, and pending approvals link
-to the existing read-only Approval Center.
+to the existing Approval Center.
 
 ## Dashboard runtime compatibility (v3.1)
 
-The internal Dashboard task runtime implementation remains available for
-compatibility and testing, but it is not exposed by the v3.3 Dashboard HTTP or
-UI surfaces.
+The Dashboard task runtime is exposed only through the authenticated Workbench
+facade. The read-only Task Control Center remains isolated from that facade.
 
 Dashboard dialogue state is separate from Telegram state and retains at most
 12 turns / 12,000 characters for six hours. The Gateway token is read from

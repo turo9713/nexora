@@ -15,6 +15,7 @@ from nexora.creators import CreatorError
 from nexora.storage import TaskReadModel
 from nexora.operations import OperationsAccessDenied, OperationsService, OperationsValidationError
 from nexora.enterprise import EnterpriseAccessDenied, EnterpriseService, EnterpriseValidationError
+from nexora.workforce import AIWorkforceError, AIWorkforceService
 
 
 class APIGatewayError(RuntimeError):
@@ -28,7 +29,7 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None, operations: OperationsService | None = None, enterprise: EnterpriseService | None = None) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None, operations: OperationsService | None = None, enterprise: EnterpriseService | None = None, workforce: AIWorkforceService | None = None) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
@@ -46,6 +47,7 @@ class APIGateway:
         self.ecosystem = ecosystem
         self.operations = operations
         self.enterprise = enterprise
+        self.workforce = workforce
         self.task_reads = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, str]:
@@ -370,6 +372,56 @@ class APIGateway:
         except ValueError as exc:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
         return {"items": self.marketplace.catalog(search=query.get("search") or None, category=query.get("category") or None, item_type=query.get("type") or None, limit=limit)}
+
+    def list_workforce(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        if self.workforce is None:
+            raise APIGatewayError(503, "WORKFORCE_UNAVAILABLE", "AI Workforce unavailable")
+        try:
+            return {"items": self.workforce.catalog(
+                principal.owner, workspace_id=query.get("workspace_id") or None,
+                search=query.get("search") or None, category=query.get("category") or None,
+                kind=query.get("kind") or None,
+            )}
+        except AIWorkforceError as exc:
+            raise APIGatewayError(400, exc.code, "Workforce query rejected") from exc
+
+    def get_workforce_item(self, principal: APIKeyPrincipal, item_id: str, query: dict[str, str]) -> dict[str, Any]:
+        if self.workforce is None:
+            raise APIGatewayError(503, "WORKFORCE_UNAVAILABLE", "AI Workforce unavailable")
+        try:
+            return self.workforce.item(principal.owner, item_id, workspace_id=query.get("workspace_id") or None)
+        except (AIWorkforceError, MarketplaceError) as exc:
+            raise APIGatewayError(404, getattr(exc, "code", "MARKETPLACE_ITEM_NOT_FOUND"), "Workforce item unavailable") from exc
+
+    def workforce_team(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        if self.workforce is None or not query.get("workspace_id"):
+            raise APIGatewayError(400, "WORKSPACE_REQUIRED", "workspace_id is required")
+        try:
+            return {"items": self.workforce.team(principal.owner, str(query["workspace_id"]))}
+        except AIWorkforceError as exc:
+            raise APIGatewayError(404, exc.code, "Workspace unavailable") from exc
+
+    def workforce_action(self, principal: APIKeyPrincipal, item_id: str, action: str, value: dict[str, Any]) -> dict[str, Any]:
+        if self.workforce is None:
+            raise APIGatewayError(503, "WORKFORCE_UNAVAILABLE", "AI Workforce unavailable")
+        workspace_id = str(value.get("workspace_id") or "")
+        if not workspace_id:
+            raise APIGatewayError(400, "WORKSPACE_REQUIRED", "workspace_id is required")
+        try:
+            if action == "install":
+                return self.workforce.install(principal.owner, workspace_id, item_id, version=str(value.get("version") or "") or None, approval_id=str(value.get("approval_id") or "") or None, auto_update=bool(value.get("auto_update")))
+            if action == "update":
+                return self.workforce.update(principal.owner, workspace_id, item_id, version=str(value.get("version") or ""), approval_id=str(value.get("approval_id") or "") or None)
+            if action == "uninstall":
+                return self.workforce.uninstall(principal.owner, workspace_id, item_id, approval_id=str(value.get("approval_id") or ""))
+            if action == "integration":
+                pending = self.workforce.request_integration(principal.owner, workspace_id, item_id, str(value.get("provider") or ""), secret_reference=str(value.get("secret_reference") or "") or None, configuration=value.get("configuration") if isinstance(value.get("configuration"), dict) else {})
+                if value.get("approval_id"):
+                    return self.workforce.activate_integration(principal.owner, workspace_id, item_id, str(value.get("provider") or ""), approval_id=str(value["approval_id"]))
+                return pending
+        except (AIWorkforceError, MarketplaceError) as exc:
+            raise APIGatewayError(403, getattr(exc, "code", "WORKFORCE_DENIED"), "Workforce action denied") from exc
+        raise APIGatewayError(400, "ACTION_INVALID", "Workforce action invalid")
 
     def get_marketplace_item(self, item_id: str) -> dict[str, Any]:
         try:

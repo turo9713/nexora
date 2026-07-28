@@ -2,6 +2,29 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.0.0] - 2026-07-28
+
+### Added
+
+- AI Workforce Marketplace with 14 official AI employees, six workflow packs,
+  four skills, categories, search, compatibility, ratings, changelogs, pricing
+  metadata, documentation, and install/update/uninstall lifecycle.
+- One-click declarative provisioning of workspace bindings, memory,
+  permissions, workflows, prompts, and settings.
+- Protected integration wizard for Telegram, Email, Google, Slack, GitHub,
+  Webhook, and API Key secret references.
+- My AI Team, Developer Portal, revenue-share accounting foundation, private
+  catalog visibility, and Free/Starter/Pro/Team/Business/Enterprise plans.
+- Authenticated Dashboard and `/api/v1/workforce` APIs, reversible migration
+  013, architecture/ER documentation, and production deployment notes.
+
+### Security
+
+- Package execution remains deny-by-default and passes existing Marketplace,
+  Policy Engine, approval, RBAC, tenant isolation, and audit controls.
+- Raw integration credentials, shell, Docker, root, production access, and
+  direct OpenClaw Gateway access are prohibited.
+
 ## [3.5.0] - 2026-07-23
 
 ### Added

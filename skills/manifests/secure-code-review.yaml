@@ -1,0 +1,28 @@
+id: secure-code-review
+name: Secure Code Review
+version: 1.0.0
+description: Систематическая проверка корректности, безопасности, тестируемости и сопровождаемости кода.
+author: Nexora
+category: development
+agent: developer
+permissions:
+  filesystem:
+    scope: [workspace]
+    mode: read_only
+  network:
+    mode: none
+  shell:
+    enabled: false
+  production:
+    enabled: false
+risk:
+  level: low
+tools: [repository_analysis, reporting]
+security:
+  sandbox:
+    enabled: true
+approval:
+  required: false
+compatibility:
+  min_platform: 1.7.0
+status: DISABLED

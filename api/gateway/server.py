@@ -35,6 +35,7 @@ from nexora.marketplace import MarketplaceService
 from nexora.creators import CreatorService
 from nexora.operations import OperationsService
 from nexora.enterprise import EnterpriseService
+from nexora.workforce import AIWorkforceService
 
 
 MAX_BODY = 32 * 1024
@@ -63,6 +64,8 @@ ROUTES = {
     ("GET", "/api/v1/usage"): ("usage:read", 60),
     ("GET", "/api/v1/limits"): ("limits:read", 60),
     ("GET", "/api/v1/marketplace"): ("marketplace:read", 60),
+    ("GET", "/api/v1/workforce"): ("marketplace:read", 60),
+    ("GET", "/api/v1/workforce/team"): ("marketplace:read", 60),
     ("POST", "/api/v1/marketplace/publish"): ("marketplace:publish", 10),
     ("GET", "/api/v1/creator/packages"): ("creator:read", 60),
     ("GET", "/api/v1/creator/analytics"): ("creator:read", 60),
@@ -138,11 +141,12 @@ def create_application(config: PublicAPIConfig) -> PublicAPIApplication:
     teams = TeamService(database, policy, audit)
     billing = BillingFoundation(database, audit)
     marketplace = MarketplaceService(database, teams, policy, audit)
+    workforce = AIWorkforceService(marketplace)
     creators = CreatorService(database, marketplace, teams, policy, audit)
     ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_secret(config.agent_memory_key_file))
     operations = OperationsService(database, teams, agents, billing)
     enterprise = EnterpriseService(database, teams, policy, audit, agents, config.state_root)
-    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics, ecosystem, operations, enterprise)
+    gateway = APIGateway(database, agents, skills, templates, playground, teams, billing, marketplace, creators, policy, tasks, approvals, webhooks, metrics, ecosystem, operations, enterprise, workforce)
     return PublicAPIApplication(gateway, APIKeyService(database), APIRateLimiter(), audit, metrics)
 
 
@@ -188,6 +192,7 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
         agent_match = re.fullmatch(r"/api/v1/agents/([^/]+)", path) if method == "GET" else None
         template_match = re.fullmatch(r"/api/v1/templates/([^/]+)", path)
         marketplace_match = re.fullmatch(r"/api/v1/marketplace/([a-z0-9][a-z0-9-]{1,62})(?:/(install))?", path)
+        workforce_match = re.fullmatch(r"/api/v1/workforce/([a-z0-9][a-z0-9-]{1,62})(?:/(install|update|uninstall|integration))?", path)
         creator_match = re.fullmatch(r"/api/v1/creators/(CRT-[A-F0-9]{12})", path)
         if route is None and task_events_match and TASK_ID.fullmatch(task_events_match.group(1)):
             route = ("tasks:read", 60)
@@ -198,6 +203,8 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
         if route is None and template_match and TASK_ID.fullmatch(template_match.group(1)):
             route = ("templates:install" if method == "POST" else "templates:read", 10 if method == "POST" else 60)
         if route is None and marketplace_match:
+            route = ("marketplace:install" if method == "POST" else "marketplace:read", 10 if method == "POST" else 60)
+        if route is None and workforce_match:
             route = ("marketplace:install" if method == "POST" else "marketplace:read", 10 if method == "POST" else 60)
         if route is None and creator_match and method == "GET":
             route = ("creators:read", 60)
@@ -271,6 +278,12 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             elif method == "GET" and path == "/api/v1/marketplace":
                 response = self.app.gateway.list_marketplace(query)
                 status = 200
+            elif method == "GET" and path == "/api/v1/workforce":
+                response = self.app.gateway.list_workforce(principal, query)
+                status = 200
+            elif method == "GET" and path == "/api/v1/workforce/team":
+                response = self.app.gateway.workforce_team(principal, query)
+                status = 200
             elif method == "POST" and path == "/api/v1/marketplace/publish":
                 response = self.app.gateway.publish_marketplace_item(principal, self._body())
                 status = 201
@@ -280,6 +293,12 @@ class PublicAPIRequestHandler(BaseHTTPRequestHandler):
             elif marketplace_match and method == "POST" and marketplace_match.group(2) == "install":
                 response = self.app.gateway.install_marketplace_item(principal, marketplace_match.group(1), self._body(), context.request_id)
                 status = 202 if response.get("status") == "WAITING_APPROVAL" else 201
+            elif workforce_match and method == "GET" and workforce_match.group(2) is None:
+                response = self.app.gateway.get_workforce_item(principal, workforce_match.group(1), query)
+                status = 200
+            elif workforce_match and method == "POST" and workforce_match.group(2):
+                response = self.app.gateway.workforce_action(principal, workforce_match.group(1), workforce_match.group(2), self._body())
+                status = 201
             elif creator_match and method == "GET":
                 response = self.app.gateway.creator_profile(creator_match.group(1))
                 status = 200

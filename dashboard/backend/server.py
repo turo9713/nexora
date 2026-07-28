@@ -43,6 +43,7 @@ from nexora.creators import CreatorService
 from nexora.dashboard.runtime import DashboardTaskRuntime, build_openclaw_orchestrator
 from nexora.operations import OperationsService
 from nexora.enterprise import EnterpriseService
+from nexora.workforce import AIWorkforceService
 
 
 COOKIE_NAME = "__Host-nexora_session"
@@ -151,6 +152,8 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     billing = BillingFoundation(database, audit)
     admin_console = AdminConsole(billing, namespace, policy)
     marketplace = MarketplaceService(database, teams, policy, audit)
+    workforce = AIWorkforceService(marketplace)
+    workforce.bootstrap_official(namespace)
     creators = CreatorService(database, marketplace, teams, policy, audit, administrator=namespace)
     ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_read_secret(config.agent_memory_key_file, 32))
     operations = OperationsService(database, teams, registry, billing)
@@ -164,7 +167,7 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
             config.gateway_timeout_seconds,
         )
         task_runtime = DashboardTaskRuntime(orchestrator, tasks, approvals, audit, policy, config.state_root, events)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise, workforce=workforce)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -233,6 +236,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         try:
+            workbench_message_match = re.fullmatch(r"/api/workbench/tasks/([A-Za-z0-9-]{3,100})/messages", path)
+            workbench_cancel_match = re.fullmatch(r"/api/workbench/tasks/([A-Za-z0-9-]{3,100})/cancel", path)
             skill_match = re.fullmatch(r"/api/skills/([^/]+)/(enable|disable|reload)", path)
             template_install_match = re.fullmatch(r"/api/templates/([^/]+)/install", path)
             key_action_match = re.fullmatch(r"/api/platform/api-keys/(KEY-[A-F0-9]{12})/(disable|delete)", path)
@@ -240,6 +245,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             plan_change_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/plan", path)
             organization_status_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/(block|unblock)", path)
             marketplace_install_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})/install", path)
+            workforce_action_match = re.fullmatch(r"/api/workforce/([a-z0-9][a-z0-9-]{1,62})/(install|update|uninstall|integration)", path)
             creator_action_match = re.fullmatch(r"/api/creator/packages/([a-z0-9][a-z0-9-]{1,62})/([0-9]+\.[0-9]+\.[0-9]+)/(submit|validate|publish)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
             notification_match = re.fullmatch(r"/api/notifications/(NTF-[A-F0-9]{16})/read", path)
@@ -248,6 +254,21 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     notification_match.group(1),
                     dict(parse_qsl(urlsplit(self.path).query, keep_blank_values=True)),
                 )
+                self.app.api.audit_access(path)
+                self._json(200, response)
+                return
+            if path == "/api/workbench/tasks":
+                response = self.app.api.create_dashboard_task(body)
+                self.app.api.audit_access(path)
+                self._json(202 if response.get("status") in {"NEW", "QUEUED", "PLANNING", "IN_PROGRESS", "WAITING_APPROVAL"} else 201, response)
+                return
+            if workbench_message_match:
+                response = self.app.api.continue_dashboard_task(workbench_message_match.group(1), body)
+                self.app.api.audit_access(path)
+                self._json(202, response)
+                return
+            if workbench_cancel_match:
+                response = self.app.api.cancel_dashboard_task(workbench_cancel_match.group(1), body)
                 self.app.api.audit_access(path)
                 self._json(200, response)
                 return
@@ -345,6 +366,18 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.app.api.audit_access(path)
                 self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response)
                 return
+            if workforce_action_match:
+                item_id, action = workforce_action_match.groups()
+                if action in {"install", "update"}:
+                    response = self.app.api.request_workforce_install(item_id, body, session.session_id)
+                elif action == "uninstall":
+                    response = self.app.api.request_workforce_uninstall(item_id, body, session.session_id)
+                else:
+                    response = self.app.api.request_workforce_integration(item_id, body, session.session_id)
+                self.app.api.audit_access(path)
+                self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response)
+                return
+                return
             self._json(404, {"error": "NOT_FOUND"})
         except DashboardAPIError as exc:
             self.app.api.audit_access(path, exc.code)
@@ -427,6 +460,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.admin_summary()
             elif path == "/api/marketplace":
                 response = self.app.api.marketplace_catalog(query)
+            elif path == "/api/workforce/catalog":
+                response = self.app.api.workforce_catalog(query)
+            elif path == "/api/workforce/team":
+                response = self.app.api.workforce_team(query)
+            elif path == "/api/workforce/developer":
+                response = self.app.api.workforce_developer_portal()
             elif path == "/api/my-items":
                 response = self.app.api.marketplace_my_items()
             elif path == "/api/publisher":
@@ -464,6 +503,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 skill_match = re.fullmatch(r"/api/skills/([^/]+)", path)
                 template_match = re.fullmatch(r"/api/templates/([^/]+)", path)
                 marketplace_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})", path)
+                workforce_match = re.fullmatch(r"/api/workforce/catalog/([a-z0-9][a-z0-9-]{1,62})", path)
                 if task_events_match and TASK_ID.fullmatch(task_events_match.group(1)):
                     response = self.app.api.task_events(task_events_match.group(1))
                 elif task_match and TASK_ID.fullmatch(task_match.group(1)):
@@ -476,6 +516,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     response = self.app.api.template_details(template_match.group(1))
                 elif marketplace_match:
                     response = self.app.api.marketplace_item(marketplace_match.group(1))
+                elif workforce_match:
+                    response = self.app.api.workforce_item(workforce_match.group(1), query)
                 else:
                     raise DashboardAPIError(404, "NOT_FOUND", "Ресурс не найден")
             self.app.api.audit_access(path)
@@ -597,6 +639,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "admin:read"
             if path == "/api/marketplace" or path.startswith("/api/marketplace/"):
                 return "marketplace:read"
+            if path.startswith("/api/workforce/"):
+                return "workforce:read"
             if path in {"/api/my-items", "/api/publisher"}:
                 return "marketplace:read"
             if path == "/api/creator":
@@ -618,6 +662,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if method == "POST":
             if path == "/api/logout":
                 return "health:read"
+            if path == "/api/workbench/tasks":
+                return "tasks:create"
+            if re.fullmatch(r"/api/workbench/tasks/[A-Za-z0-9-]{3,100}/messages", path):
+                return "tasks:continue"
+            if re.fullmatch(r"/api/workbench/tasks/[A-Za-z0-9-]{3,100}/cancel", path):
+                return "tasks:cancel"
             if re.fullmatch(r"/api/notifications/NTF-[A-F0-9]{16}/read", path):
                 return "notifications:write"
             if re.fullmatch(r"/api/skills/[^/]+/(enable|disable|reload)", path):
@@ -634,6 +684,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "admin:manage"
             if path in {"/api/publisher/register", "/api/marketplace/publish"} or re.fullmatch(r"/api/marketplace/[a-z0-9][a-z0-9-]{1,62}/install", path):
                 return "marketplace:manage"
+            if re.fullmatch(r"/api/workforce/[a-z0-9][a-z0-9-]{1,62}/(?:install|update|uninstall|integration)", path):
+                return "workforce:manage"
             if path in {"/api/creator/profile", "/api/creator/packages"} or re.fullmatch(r"/api/creator/packages/[a-z0-9][a-z0-9-]{1,62}/[0-9]+\.[0-9]+\.[0-9]+/(submit|validate|publish)", path):
                 return "creator:manage"
             if path in {"/api/agent-center", "/api/agent-teams", "/api/agent-planning"}:
@@ -675,7 +727,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/home", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations", "/security-center", "/policies", "/sla", "/storage-health", "/enterprise")):
+        elif path == "/" or path.startswith(("/home", "/workbench", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/ai-team", "/developer", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations", "/security-center", "/policies", "/sla", "/storage-health", "/enterprise")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})
