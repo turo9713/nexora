@@ -37,8 +37,8 @@ def config(tmp_path: Path) -> PublicAPIConfig:
     )
 
 
-def issue(app, scopes: list[str], name: str = "test") -> tuple[str, str]:
-    key_id = app.keys.request_key(OWNER, name, scopes, "2099-01-01T00:00:00+00:00")
+def issue(app, scopes: list[str], name: str = "test", *, owner: str = OWNER) -> tuple[str, str]:
+    key_id = app.keys.request_key(owner, name, scopes, "2099-01-01T00:00:00+00:00")
     approval_id = "APR-TEST0001"
     app.gateway.database.attach_api_key_approval(key_id, approval_id)
     return key_id, app.keys.activate(key_id, approval_id)
@@ -94,6 +94,192 @@ def test_rate_limit_per_key_endpoint_owner_and_recovery() -> None:
     assert limiter.allow("KEY-A", OWNER, "/api/v1/skills", limit=2)
     now[0] += 61
     assert limiter.allow("KEY-A", OWNER, "/api/v1/tasks", limit=2)
+
+
+def test_agent_control_center_api_auth_scope_isolation_and_audit(tmp_path: Path) -> None:
+    server = create_server(config(tmp_path), use_tls=False)
+    app = server.RequestHandlerClass.app
+    organization = app.gateway.teams.create_organization(OWNER, "Agent API Organization")
+    workspace = app.gateway.teams.create_workspace(OWNER, organization["id"], "Agent API Workspace")
+    app.gateway.database.set_workspace_component(workspace["id"], "agent", "developer", True)
+    app.gateway.database.upsert_task({
+        "task_id": "NX-AGENT-API-001", "owner_namespace": OWNER, "title": "Agent API task",
+        "status": "COMPLETED", "progress": 100, "assigned_agent": "developer",
+        "created_at": "2026-07-22T08:00:00+00:00", "updated_at": "2026-07-22T08:10:00+00:00",
+        "completed_at": "2026-07-22T08:10:00+00:00", "result_summary": "safe", "error_code": None,
+    })
+    app.gateway.teams.link_task(OWNER, workspace["id"], "NX-AGENT-API-001")
+    _, agent_key = issue(app, ["agents:read"], "agent-control")
+    _, wrong_scope_key = issue(app, ["tasks:read"], "agent-wrong-scope")
+    foreign_owner = "e" * 32
+    foreign_organization = app.gateway.teams.create_organization(foreign_owner, "Foreign Agent Organization")
+    foreign_workspace = app.gateway.teams.create_workspace(foreign_owner, foreign_organization["id"], "Foreign Agent Workspace")
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    try:
+        response, data = request(connection, "GET", "/api/v1/agents")
+        assert response.status == 401 and data["error"] == "UNAUTHORIZED"
+        response, data = request(connection, "GET", "/api/v1/agents", key=wrong_scope_key)
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
+
+        response, data = request(connection, "GET", f"/api/v1/agents?workspace_id={workspace['id']}", key=agent_key)
+        assert response.status == 200 and [item["id"] for item in data["items"]] == ["developer"]
+        agent = data["items"][0]
+        assert agent["completed_tasks"] == 1 and agent["last_activity"] == "2026-07-22T08:10:00+00:00"
+        assert {"name", "description", "status", "role", "risk_level", "permissions", "allowed_tools", "restrictions"} <= set(agent)
+
+        response, details = request(connection, "GET", f"/api/v1/agents/developer?workspace_id={workspace['id']}", key=agent_key)
+        assert response.status == 200 and details["id"] == "developer"
+        response, data = request(connection, "GET", f"/api/v1/agents/content?workspace_id={workspace['id']}", key=agent_key)
+        assert response.status == 404 and data["error"] == "AGENT_NOT_FOUND"
+        response, data = request(connection, "GET", f"/api/v1/agents/developer?workspace_id={foreign_workspace['id']}", key=agent_key)
+        assert response.status == 404 and data["error"] == "WORKSPACE_NOT_FOUND"
+        response, data = request(connection, "POST", "/api/v1/agents/developer", key=agent_key, body={"enabled": False})
+        assert response.status == 404 and data["error"] == "NOT_FOUND"
+        assert app.gateway.database.get_agent_override("developer") is None
+
+        audit = (config(tmp_path).state_root / "audit" / "events.jsonl").read_text(encoding="utf-8")
+        assert "API_REQUEST" in audit and "API_SUCCESS" in audit and "API_DENIED" in audit
+        assert agent_key not in audit and wrong_scope_key not in audit and "Authorization" not in audit
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_task_control_center_read_api_events_isolation_and_audit(tmp_path: Path) -> None:
+    server = create_server(config(tmp_path), use_tls=False)
+    app = server.RequestHandlerClass.app
+    organization = app.gateway.teams.create_organization(OWNER, "Task API Organization")
+    workspace = app.gateway.teams.create_workspace(OWNER, organization["id"], "Task API Workspace")
+    other_workspace = app.gateway.teams.create_workspace(OWNER, organization["id"], "Other Task Workspace")
+    foreign_owner = "e" * 32
+    foreign_organization = app.gateway.teams.create_organization(foreign_owner, "Foreign Task Organization")
+    foreign_workspace = app.gateway.teams.create_workspace(foreign_owner, foreign_organization["id"], "Foreign Task Workspace")
+
+    task = app.gateway.tasks.create(OWNER, "Read-only task control", "api-read-session", task_id="NX-TASK-CENTER-001")
+    app.gateway.tasks.update_fields(OWNER, task["task_id"], assigned_agent="Content")
+    app.gateway.tasks.transition(OWNER, task["task_id"], "PLANNING", stage="Планирование безопасного отчёта", progress=20)
+    app.gateway.tasks.event_bus.publish(
+        "AGENT_STARTED",
+        task_id=task["task_id"],
+        metadata={
+            "agent": "content",
+            "workflow": "content-factory",
+            "provider_mode": "openclaw",
+            "authorization": "Bearer fixture-task-control-secret",
+        },
+    )
+    app.gateway.tasks.event_bus.publish(
+        "AGENT_FINISHED",
+        task_id=task["task_id"],
+        metadata={"agent": "content", "workflow": "content-factory", "result": "SUCCESS"},
+    )
+    app.gateway.tasks.transition(OWNER, task["task_id"], "COMPLETED", stage="Завершено", progress=100)
+    app.gateway.teams.link_task(OWNER, workspace["id"], task["task_id"])
+    app.gateway.tasks.create(foreign_owner, "Foreign task", "foreign-session", task_id="NX-TASK-FOREIGN-001")
+
+    _, read_key = issue(app, ["tasks:read"], "task-control")
+    _, wrong_scope_key = issue(app, ["agents:read"], "task-wrong-scope")
+    viewer = "a" * 32
+    viewer_id = app.gateway.database.ensure_team_user(viewer)
+    app.gateway.database.upsert_workspace_member("MEM-TASKVIEW001", workspace["id"], viewer_id, "VIEWER")
+    _, viewer_key = issue(app, ["tasks:read"], "task-viewer", owner=viewer)
+
+    rate_limit_paths: list[str] = []
+
+    class RecordingRateLimiter:
+        def allow(self, key_id: str, owner: str, endpoint: str, *, limit: int) -> bool:
+            rate_limit_paths.append(endpoint)
+            return True
+
+    app.rate_limiter = RecordingRateLimiter()
+
+    def forbidden_create(*_args, **_kwargs):
+        raise AssertionError("read endpoint invoked task creation")
+
+    app.gateway.tasks.create = forbidden_create
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    try:
+        response, data = request(connection, "GET", "/api/v1/tasks/NX-TASK-CENTER-001/events")
+        assert response.status == 401 and data["error"] == "UNAUTHORIZED"
+        response, data = request(connection, "GET", "/api/v1/tasks/NX-TASK-CENTER-001/events", key=wrong_scope_key)
+        assert response.status == 403 and data["error"] == "SCOPE_DENIED"
+
+        response, data = request(connection, "GET", f"/api/v1/tasks?workspace_id={workspace['id']}", key=read_key)
+        assert response.status == 200 and [item["task_id"] for item in data["items"]] == [task["task_id"]]
+        listed = data["items"][0]
+        assert {
+            "task_id", "title", "description", "status", "stage", "progress", "assigned_agent",
+            "workflow", "provider_mode", "created_at", "updated_at", "completed_at",
+        } <= set(listed)
+        assert listed["status"] == "COMPLETED" and listed["progress"] == 100
+        assert listed["workflow"] == "content-factory" and listed["provider_mode"] == "openclaw"
+
+        response, details = request(
+            connection,
+            "GET",
+            f"/api/v1/tasks/{task['task_id']}?workspace_id={workspace['id']}",
+            key=read_key,
+        )
+        assert response.status == 200 and details["task_id"] == task["task_id"]
+        assert response.getheader("X-Request-ID") == details["request_id"]
+        assert response.getheader("X-Correlation-ID") == "CORR-TEST-0001"
+
+        response, events = request(
+            connection,
+            "GET",
+            f"/api/v1/tasks/{task['task_id']}/events?workspace_id={workspace['id']}",
+            key=read_key,
+        )
+        assert response.status == 200
+        event_types = [item["type"] for item in events["items"]]
+        assert "TASK_CREATED" in event_types and "AGENT_STARTED" in event_types
+        assert "AGENT_FINISHED" in event_types and "TASK_COMPLETED" in event_types
+        assert all({"event_id", "type", "timestamp", "status", "stage", "progress", "agent", "workflow", "result"} <= set(item) for item in events["items"])
+
+        response, data = request(connection, "GET", f"/api/v1/tasks?workspace_id={workspace['id']}", key=viewer_key)
+        assert response.status == 200 and [item["task_id"] for item in data["items"]] == [task["task_id"]]
+        response, data = request(connection, "GET", f"/api/v1/tasks/{task['task_id']}", key=viewer_key)
+        assert response.status == 200 and data["task_id"] == task["task_id"]
+        response, data = request(connection, "GET", f"/api/v1/tasks/{task['task_id']}/events", key=viewer_key)
+        assert response.status == 200 and any(item["type"] == "TASK_COMPLETED" for item in data["items"])
+
+        response, data = request(connection, "GET", "/api/v1/tasks/NX-TASK-UNKNOWN-001", key=read_key)
+        assert response.status == 404 and data["error"] == "TASK_NOT_FOUND"
+        response, data = request(connection, "GET", "/api/v1/tasks/NX-TASK-FOREIGN-001", key=read_key)
+        assert response.status == 404 and data["error"] == "TASK_NOT_FOUND"
+        response, data = request(connection, "GET", f"/api/v1/tasks/{task['task_id']}?workspace_id={other_workspace['id']}", key=read_key)
+        assert response.status == 404 and data["error"] == "TASK_NOT_FOUND"
+        response, data = request(connection, "GET", f"/api/v1/tasks/{task['task_id']}?workspace_id={foreign_workspace['id']}", key=read_key)
+        assert response.status == 404 and data["error"] == "WORKSPACE_NOT_FOUND"
+        response, data = request(connection, "POST", f"/api/v1/tasks/{task['task_id']}/events", key=read_key, body={})
+        assert response.status == 404 and data["error"] == "NOT_FOUND"
+
+        owner_user_id = app.gateway.database.user_id(OWNER)
+        assert owner_user_id is not None
+        app.gateway.database.set_workspace_member(workspace["id"], owner_user_id, status="REMOVED")
+        response, data = request(connection, "GET", f"/api/v1/tasks/{task['task_id']}", key=read_key)
+        assert response.status == 404 and data["error"] == "TASK_NOT_FOUND"
+        response, data = request(connection, "GET", "/api/v1/tasks", key=read_key)
+        assert response.status == 200 and task["task_id"] not in {item["task_id"] for item in data["items"]}
+
+        assert rate_limit_paths.count("/api/v1/tasks/{id}") >= 3
+        assert "/api/v1/tasks/{id}/events" in rate_limit_paths
+        audit = (config(tmp_path).state_root / "audit" / "events.jsonl").read_text(encoding="utf-8")
+        assert "CORR-TEST-0001" in audit and "API_SUCCESS" in audit and "API_DENIED" in audit
+        assert "fixture-task-control-secret" not in audit
+        assert read_key not in audit and wrong_scope_key not in audit and viewer_key not in audit and "Authorization" not in audit
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_marketplace_http_api_scopes_publish_catalog_and_install(tmp_path: Path) -> None:
@@ -231,7 +417,14 @@ def test_versioned_http_api_task_scopes_rate_limit_and_webhook_approval(tmp_path
         response, data = request(connection, "GET", f"/api/v1/knowledge?workspace_id={workspace['id']}", key=full_key)
         assert response.status == 200 and data["items"][0]["name"] == "API Guide"
         response, data = request(connection, "GET", "/api/v1/plans", key=full_key)
-        assert response.status == 200 and [item["id"] for item in data["items"]] == ["free", "pro", "team", "enterprise"]
+        assert response.status == 200 and [item["id"] for item in data["items"]] == [
+            "free",
+            "starter",
+            "pro",
+            "team",
+            "business",
+            "enterprise",
+        ]
         response, data = request(connection, "GET", f"/api/v1/subscription?organization_id={organization['id']}", key=full_key)
         assert response.status == 200 and data["plan_id"] == "free"
         response, data = request(connection, "POST", "/api/v1/subscription", key=full_key, body={"plan_id": "enterprise"})
@@ -267,4 +460,5 @@ def test_public_api_has_no_gateway_transport_or_secret_config(tmp_path: Path) ->
     assert "openclaw_provider" not in source and "openclaw_transport" not in source
     specification = yaml.safe_load((PROJECT / "api" / "schemas" / "openapi-v1.yaml").read_text(encoding="utf-8"))
     assert specification["openapi"] == "3.1.0" and "/tasks" in specification["paths"] and "/templates" in specification["paths"]
+    assert "/agents" in specification["paths"] and "/agents/{id}" in specification["paths"]
     assert {"/organizations", "/workspaces", "/members", "/invite", "/knowledge", "/plans", "/subscription", "/usage", "/limits"}.issubset(specification["paths"])

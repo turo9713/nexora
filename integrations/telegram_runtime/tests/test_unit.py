@@ -110,8 +110,9 @@ def test_context_permissions_and_no_identity(tmp_path: Path):
     session = store.set_active_task(session, "NX-TEST-123")
     session = store.add_turn(session, "user", "safe message")
     store.save(session)
-    assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
-    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
     raw = store.path.read_text(encoding="utf-8")
     assert "telegram_id" not in raw and "owner_id" not in raw and str(OWNER_ID) not in raw
 
@@ -192,5 +193,6 @@ def test_action_file_permissions(tmp_path: Path):
     service.begin(namespace, "key", "test")
     action_files = list((tmp_path / "actions" / namespace).glob("*.json"))
     assert len(action_files) == 1
-    assert stat.S_IMODE(action_files[0].stat().st_mode) == 0o600
-    assert stat.S_IMODE(action_files[0].parent.stat().st_mode) == 0o700
+    if os.name == "posix":
+        assert stat.S_IMODE(action_files[0].stat().st_mode) == 0o600
+        assert stat.S_IMODE(action_files[0].parent.stat().st_mode) == 0o700

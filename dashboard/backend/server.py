@@ -40,6 +40,10 @@ from nexora.templates import TemplateRegistry
 from nexora.webhooks import WebhookService
 from nexora.marketplace import MarketplaceService
 from nexora.creators import CreatorService
+from nexora.dashboard.runtime import DashboardTaskRuntime, build_openclaw_orchestrator
+from nexora.operations import OperationsService
+from nexora.enterprise import EnterpriseService
+from nexora.workforce import AIWorkforceService
 
 
 COOKIE_NAME = "__Host-nexora_session"
@@ -64,6 +68,9 @@ class DashboardConfig:
     tls_key_file: Path | None = Path("/run/secrets/dashboard_tls_key")
     webhook_master_file: Path = Path("/run/secrets/api_webhook_master")
     agent_memory_key_file: Path = Path("/run/secrets/agent_memory_key")
+    gateway_token_file: Path = Path("/run/secrets/openclaw_gateway_token")
+    gateway_endpoint: str = "http://nexora-openclaw-gateway:18789/v1/responses"
+    gateway_timeout_seconds: float = 120.0
     allowed_origins: tuple[str, ...] = ("https://127.0.0.1:18880", "https://localhost:18880")
     session_ttl_seconds: int = 1800
 
@@ -145,9 +152,22 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     billing = BillingFoundation(database, audit)
     admin_console = AdminConsole(billing, namespace, policy)
     marketplace = MarketplaceService(database, teams, policy, audit)
+    workforce = AIWorkforceService(marketplace)
+    workforce.bootstrap_official(namespace)
     creators = CreatorService(database, marketplace, teams, policy, audit, administrator=namespace)
     ecosystem = AgentEcosystem(database, teams, policy, audit, memory_pepper=_read_secret(config.agent_memory_key_file, 32))
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem)
+    operations = OperationsService(database, teams, registry, billing)
+    enterprise = EnterpriseService(database, teams, policy, audit, registry, config.state_root)
+    task_runtime = None
+    if config.gateway_token_file.is_file() and not config.gateway_token_file.is_symlink():
+        orchestrator = build_openclaw_orchestrator(
+            config.project_root,
+            config.gateway_token_file,
+            config.gateway_endpoint,
+            config.gateway_timeout_seconds,
+        )
+        task_runtime = DashboardTaskRuntime(orchestrator, tasks, approvals, audit, policy, config.state_root, events)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise, workforce=workforce)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -171,7 +191,7 @@ def create_server(config: DashboardConfig, *, use_tls: bool = True) -> Threading
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
     app: DashboardApplication
-    server_version = "NexoraDashboard/3.0"
+    server_version = "NexoraDashboard/3.5"
     sys_version = ""
 
     def do_GET(self) -> None:
@@ -184,6 +204,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             if not self.app.limiter.allow(self.client_address[0]):
                 self.app.api.audit_access(path, "RATE_LIMITED")
                 self._json(429, {"error": "RATE_LIMITED"})
+                return
+            if path == "/api/realtime/tasks":
+                self._stream_realtime(dict(parse_qsl(parsed.query, keep_blank_values=True)))
                 return
             self._handle_api_get(path, dict(parse_qsl(parsed.query, keep_blank_values=True)))
             return
@@ -213,7 +236,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         try:
-            agent_match = re.fullmatch(r"/api/agents/([^/]+)/actions", path)
+            workbench_message_match = re.fullmatch(r"/api/workbench/tasks/([A-Za-z0-9-]{3,100})/messages", path)
+            workbench_cancel_match = re.fullmatch(r"/api/workbench/tasks/([A-Za-z0-9-]{3,100})/cancel", path)
             skill_match = re.fullmatch(r"/api/skills/([^/]+)/(enable|disable|reload)", path)
             template_install_match = re.fullmatch(r"/api/templates/([^/]+)/install", path)
             key_action_match = re.fullmatch(r"/api/platform/api-keys/(KEY-[A-F0-9]{12})/(disable|delete)", path)
@@ -221,22 +245,39 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             plan_change_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/plan", path)
             organization_status_match = re.fullmatch(r"/api/admin/organizations/(ORG-[A-F0-9]{12})/(block|unblock)", path)
             marketplace_install_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})/install", path)
+            workforce_action_match = re.fullmatch(r"/api/workforce/([a-z0-9][a-z0-9-]{1,62})/(install|update|uninstall|integration)", path)
             creator_action_match = re.fullmatch(r"/api/creator/packages/([a-z0-9][a-z0-9-]{1,62})/([0-9]+\.[0-9]+\.[0-9]+)/(submit|validate|publish)", path)
             approval_match = re.fullmatch(r"/api/approvals/([^/]+)/(approve|reject)", path)
+            notification_match = re.fullmatch(r"/api/notifications/(NTF-[A-F0-9]{16})/read", path)
+            if notification_match:
+                response = self.app.api.mark_notification_read(
+                    notification_match.group(1),
+                    dict(parse_qsl(urlsplit(self.path).query, keep_blank_values=True)),
+                )
+                self.app.api.audit_access(path)
+                self._json(200, response)
+                return
+            if path == "/api/workbench/tasks":
+                response = self.app.api.create_dashboard_task(body)
+                self.app.api.audit_access(path)
+                self._json(202 if response.get("status") in {"NEW", "QUEUED", "PLANNING", "IN_PROGRESS", "WAITING_APPROVAL"} else 201, response)
+                return
+            if workbench_message_match:
+                response = self.app.api.continue_dashboard_task(workbench_message_match.group(1), body)
+                self.app.api.audit_access(path)
+                self._json(202, response)
+                return
+            if workbench_cancel_match:
+                response = self.app.api.cancel_dashboard_task(workbench_cancel_match.group(1), body)
+                self.app.api.audit_access(path)
+                self._json(200, response)
+                return
             if path == "/api/agent-center":
                 response = self.app.api.create_custom_agent(body, session.session_id); self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response); return
             if path == "/api/agent-teams":
                 response = self.app.api.create_agent_team(body, session.session_id); self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response); return
             if path == "/api/agent-planning":
                 self._json(201, self.app.api.create_agent_plan(body)); return
-            if agent_match:
-                agent_id = agent_match.group(1)
-                if not AGENT_ID.fullmatch(agent_id):
-                    raise DashboardAPIError(404, "AGENT_NOT_FOUND", "Агент не найден")
-                response = self.app.api.request_agent_action(agent_id, str(body.get("action") or ""), session.session_id)
-                self.app.api.audit_access(path)
-                self._json(202, response)
-                return
             if path == "/api/platform/api-keys":
                 response = self.app.api.request_api_key_create(body, session.session_id)
                 self.app.api.audit_access(path)
@@ -325,6 +366,18 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.app.api.audit_access(path)
                 self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response)
                 return
+            if workforce_action_match:
+                item_id, action = workforce_action_match.groups()
+                if action in {"install", "update"}:
+                    response = self.app.api.request_workforce_install(item_id, body, session.session_id)
+                elif action == "uninstall":
+                    response = self.app.api.request_workforce_uninstall(item_id, body, session.session_id)
+                else:
+                    response = self.app.api.request_workforce_integration(item_id, body, session.session_id)
+                self.app.api.audit_access(path)
+                self._json(202 if response.get("status") == "WAITING_APPROVAL" else 201, response)
+                return
+                return
             self._json(404, {"error": "NOT_FOUND"})
         except DashboardAPIError as exc:
             self.app.api.audit_access(path, exc.code)
@@ -339,10 +392,44 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if session is None:
             return
         try:
+            result_download_match = re.fullmatch(r"/api/tasks/([A-Za-z0-9-]{3,100})/downloads/result", path)
+            if result_download_match:
+                filename, content = self.app.api.task_result_file(result_download_match.group(1))
+                self.app.api.audit_access(path)
+                self._download(filename, content)
+                return
             if path == "/api/session":
                 response: Any = {"authenticated": True, "csrf_token": session.csrf_token, "expires_at": session.expires_at}
             elif path == "/api/health":
                 response = self.app.api.health()
+            elif path == "/api/dashboard":
+                response = self.app.api.user_dashboard(query)
+            elif path == "/api/activity":
+                response = self.app.api.activity_feed(query)
+            elif path == "/api/notifications":
+                response = self.app.api.notifications_feed(query)
+            elif path == "/api/workspace-overview":
+                response = self.app.api.workspace_overview(query)
+            elif path == "/api/agents/status":
+                response = self.app.api.agent_status_center(query)
+            elif path == "/api/operations/analytics":
+                response = self.app.api.operations_analytics(query)
+            elif path == "/api/enterprise/security-center":
+                response = self.app.api.enterprise_security_center(query)
+            elif path == "/api/enterprise/policies":
+                response = self.app.api.enterprise_policies(query)
+            elif path == "/api/enterprise/security-events":
+                response = self.app.api.enterprise_security_events(query)
+            elif path == "/api/enterprise/sla":
+                response = self.app.api.enterprise_sla(query)
+            elif path == "/api/enterprise/storage-health":
+                response = self.app.api.enterprise_storage_health(query)
+            elif path == "/api/enterprise/deployment-profiles":
+                response = self.app.api.enterprise_deployment_profiles(query)
+            elif path == "/api/enterprise/sso":
+                response = self.app.api.enterprise_sso(query)
+            elif path == "/api/enterprise/compliance":
+                response = self.app.api.enterprise_compliance(query)
             elif path == "/api/tasks":
                 response = self.app.api.list_tasks(query)
             elif path == "/api/agents":
@@ -373,6 +460,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.admin_summary()
             elif path == "/api/marketplace":
                 response = self.app.api.marketplace_catalog(query)
+            elif path == "/api/workforce/catalog":
+                response = self.app.api.workforce_catalog(query)
+            elif path == "/api/workforce/team":
+                response = self.app.api.workforce_team(query)
+            elif path == "/api/workforce/developer":
+                response = self.app.api.workforce_developer_portal()
             elif path == "/api/my-items":
                 response = self.app.api.marketplace_my_items()
             elif path == "/api/publisher":
@@ -404,12 +497,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/platform/integrations":
                 response = self.app.api.integrations()
             else:
+                task_events_match = re.fullmatch(r"/api/tasks/([^/]+)/events", path)
                 task_match = re.fullmatch(r"/api/tasks/([^/]+)", path)
                 agent_match = re.fullmatch(r"/api/agents/([^/]+)", path)
                 skill_match = re.fullmatch(r"/api/skills/([^/]+)", path)
                 template_match = re.fullmatch(r"/api/templates/([^/]+)", path)
                 marketplace_match = re.fullmatch(r"/api/marketplace/([a-z0-9][a-z0-9-]{1,62})", path)
-                if task_match and TASK_ID.fullmatch(task_match.group(1)):
+                workforce_match = re.fullmatch(r"/api/workforce/catalog/([a-z0-9][a-z0-9-]{1,62})", path)
+                if task_events_match and TASK_ID.fullmatch(task_events_match.group(1)):
+                    response = self.app.api.task_events(task_events_match.group(1))
+                elif task_match and TASK_ID.fullmatch(task_match.group(1)):
                     response = self.app.api.task_details(task_match.group(1))
                 elif agent_match and AGENT_ID.fullmatch(agent_match.group(1)):
                     response = self.app.api.agent_details(agent_match.group(1))
@@ -419,6 +516,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     response = self.app.api.template_details(template_match.group(1))
                 elif marketplace_match:
                     response = self.app.api.marketplace_item(marketplace_match.group(1))
+                elif workforce_match:
+                    response = self.app.api.workforce_item(workforce_match.group(1), query)
                 else:
                     raise DashboardAPIError(404, "NOT_FOUND", "Ресурс не найден")
             self.app.api.audit_access(path)
@@ -429,6 +528,45 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         except (ValueError, PermissionError):
             self.app.api.audit_access(path, "AGENT_ECOSYSTEM_DENIED")
             self._json(404, {"error": "RESOURCE_NOT_FOUND"})
+
+    def _stream_realtime(self, query: dict[str, str]) -> None:
+        session = self._require_session("operations:read")
+        if session is None:
+            return
+        cursor = self.headers.get("Last-Event-ID", "")[:120] or query.get("after") or None
+        try:
+            initial = self.app.api.realtime_events(query, cursor)
+        except DashboardAPIError as exc:
+            self.app.api.audit_access("/api/realtime/tasks", exc.code)
+            self._json(exc.status, {"error": exc.code, "message": exc.message})
+            return
+        self.app.api.audit_access("/api/realtime/tasks")
+        self.send_response(200)
+        self._security_headers()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        started = time.monotonic()
+        heartbeat = started
+        pending = initial
+        try:
+            self.wfile.write(b"retry: 2000\n\n")
+            while time.monotonic() - started < 25:
+                for event in pending.get("items", []):
+                    self.wfile.write(self.app.api.operations.realtime.encode(event))
+                    cursor = str(event.get("event_id") or cursor or "")
+                if pending.get("items"):
+                    self.wfile.flush()
+                now = time.monotonic()
+                if now - heartbeat >= 10:
+                    self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+                    heartbeat = now
+                time.sleep(1)
+                pending = self.app.api.realtime_events(query, cursor)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            return
 
     def _login(self) -> None:
         if not self._valid_origin():
@@ -463,6 +601,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if method == "GET":
             if path in {"/api/session", "/api/health"}:
                 return "health:read"
+            if path in {"/api/dashboard", "/api/activity", "/api/workspace-overview", "/api/operations/analytics", "/api/realtime/tasks"}:
+                return "operations:read"
+            if path.startswith("/api/enterprise/"):
+                return "enterprise:read"
+            if path == "/api/notifications":
+                return "notifications:read"
+            if path == "/api/agents/status":
+                return "agents:read"
             if path == "/api/tasks" or path.startswith("/api/tasks/"):
                 return "tasks:read"
             if path == "/api/agents" or path.startswith("/api/agents/"):
@@ -493,6 +639,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "admin:read"
             if path == "/api/marketplace" or path.startswith("/api/marketplace/"):
                 return "marketplace:read"
+            if path.startswith("/api/workforce/"):
+                return "workforce:read"
             if path in {"/api/my-items", "/api/publisher"}:
                 return "marketplace:read"
             if path == "/api/creator":
@@ -514,8 +662,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if method == "POST":
             if path == "/api/logout":
                 return "health:read"
-            if re.fullmatch(r"/api/agents/[^/]+/actions", path):
-                return "agents:request_change"
+            if path == "/api/workbench/tasks":
+                return "tasks:create"
+            if re.fullmatch(r"/api/workbench/tasks/[A-Za-z0-9-]{3,100}/messages", path):
+                return "tasks:continue"
+            if re.fullmatch(r"/api/workbench/tasks/[A-Za-z0-9-]{3,100}/cancel", path):
+                return "tasks:cancel"
+            if re.fullmatch(r"/api/notifications/NTF-[A-F0-9]{16}/read", path):
+                return "notifications:write"
             if re.fullmatch(r"/api/skills/[^/]+/(enable|disable|reload)", path):
                 return "skills:request_change"
             if re.fullmatch(r"/api/templates/[^/]+/install", path):
@@ -530,6 +684,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "admin:manage"
             if path in {"/api/publisher/register", "/api/marketplace/publish"} or re.fullmatch(r"/api/marketplace/[a-z0-9][a-z0-9-]{1,62}/install", path):
                 return "marketplace:manage"
+            if re.fullmatch(r"/api/workforce/[a-z0-9][a-z0-9-]{1,62}/(?:install|update|uninstall|integration)", path):
+                return "workforce:manage"
             if path in {"/api/creator/profile", "/api/creator/packages"} or re.fullmatch(r"/api/creator/packages/[a-z0-9][a-z0-9-]{1,62}/[0-9]+\.[0-9]+\.[0-9]+/(submit|validate|publish)", path):
                 return "creator:manage"
             if path in {"/api/agent-center", "/api/agent-teams", "/api/agent-planning"}:
@@ -571,7 +727,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations")):
+        elif path == "/" or path.startswith(("/home", "/workbench", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/ai-team", "/developer", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations", "/security-center", "/policies", "/sla", "/storage-health", "/enterprise")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})
@@ -609,6 +765,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", f"{COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
         self.end_headers()
         self.wfile.write(payload)
+
+    def _download(self, filename: str, content: bytes) -> None:
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", filename)[:160] or "nexora-result.txt"
+        self.send_response(200)
+        self._security_headers()
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(content)
 
     def _security_headers(self) -> None:
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")

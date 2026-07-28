@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from nexora.agents.registry import safe_agent_view
 from nexora.api.auth import APIKeyPrincipal
 from nexora.api.schemas import APIValidationError, validate_invite, validate_knowledge, validate_task_create, validate_webhook_create, validate_workspace_create
 from nexora.collaboration import TeamAccessDenied, TeamValidationError
@@ -11,6 +12,10 @@ from nexora.skills import SkillRegistryError
 from nexora.templates import TemplateApprovalRequired, TemplateRegistryError
 from nexora.marketplace import MarketplaceError
 from nexora.creators import CreatorError
+from nexora.storage import TaskReadModel
+from nexora.operations import OperationsAccessDenied, OperationsService, OperationsValidationError
+from nexora.enterprise import EnterpriseAccessDenied, EnterpriseService, EnterpriseValidationError
+from nexora.workforce import AIWorkforceError, AIWorkforceService
 
 
 class APIGatewayError(RuntimeError):
@@ -24,7 +29,7 @@ class APIGatewayError(RuntimeError):
 class APIGateway:
     """Authorized facade over task services; it has no provider or Gateway transport."""
 
-    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None) -> None:
+    def __init__(self, database: Any, agents: Any, skills: Any, templates: Any, playground: Any, teams: Any, billing: Any, marketplace: Any, creators: Any, policy: Any, tasks: Any, approvals: Any, webhooks: Any, metrics: Any, ecosystem: Any | None = None, operations: OperationsService | None = None, enterprise: EnterpriseService | None = None, workforce: AIWorkforceService | None = None) -> None:
         self.database = database
         self.agents = agents
         self.skills = skills
@@ -40,9 +45,62 @@ class APIGateway:
         self.webhooks = webhooks
         self.metrics = metrics
         self.ecosystem = ecosystem
+        self.operations = operations
+        self.enterprise = enterprise
+        self.workforce = workforce
+        self.task_reads = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, str]:
         return {"status": "ok" if self.database.check() and self.skills.health()["ok"] and self.templates.health()["ok"] else "degraded", "version": "v1"}
+
+    def operations_dashboard(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        return self._operations_call("dashboard", principal, query)
+
+    def operations_activity(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(100, int(query.get("limit", "50"))))
+        except ValueError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
+        return self._operations_call("activity", principal, query, limit=limit)
+
+    def operations_notifications(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            limit = max(1, min(100, int(query.get("limit", "50"))))
+        except ValueError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
+        return self._operations_call("notifications", principal, query, status=query.get("status") or None, limit=limit)
+
+    def operations_agent_status(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        return self._operations_call("agent_status", principal, query)
+
+    def _operations_call(self, method: str, principal: APIKeyPrincipal, query: dict[str, str], **kwargs: Any) -> dict[str, Any]:
+        if self.operations is None:
+            raise APIGatewayError(503, "OPERATIONS_UNAVAILABLE", "Operations layer unavailable")
+        try:
+            return getattr(self.operations, method)(principal.owner, query.get("workspace_id") or None, **kwargs)
+        except OperationsAccessDenied as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        except OperationsValidationError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid operations request") from exc
+
+    def enterprise_read(self, principal: APIKeyPrincipal, resource: str, query: dict[str, str]) -> dict[str, Any]:
+        if self.enterprise is None:
+            raise APIGatewayError(503, "ENTERPRISE_UNAVAILABLE", "Enterprise layer unavailable")
+        methods = {"policies": "list_policies", "security_events": "security_events", "sla": "sla", "storage_health": "storage_health"}
+        if resource not in methods:
+            raise APIGatewayError(404, "NOT_FOUND", "Resource unavailable")
+        kwargs: dict[str, Any] = {}
+        if resource == "security_events":
+            try:
+                kwargs["limit"] = max(1, min(200, int(query.get("limit", "100"))))
+            except ValueError as exc:
+                raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
+        try:
+            return getattr(self.enterprise, methods[resource])(principal.owner, query.get("workspace_id") or None, **kwargs)
+        except EnterpriseAccessDenied as exc:
+            raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+        except EnterpriseValidationError as exc:
+            raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid enterprise request") from exc
 
     def ecosystem_list(self, principal: APIKeyPrincipal, resource: str, query: dict[str, str]) -> dict[str, Any]:
         if self.ecosystem is None:
@@ -114,16 +172,60 @@ class APIGateway:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Некорректный лимит") from exc
         workspace_id = query.get("workspace_id")
         try:
-            items = self.teams.list_tasks(principal.owner, workspace_id, limit) if workspace_id else self.database.list_tasks(principal.owner, limit=limit)
+            if workspace_id:
+                items = self.teams.list_tasks(principal.owner, workspace_id, limit)
+                projected = self.task_reads.list_workspace(workspace_id, items)
+            else:
+                items = self.database.list_tasks(principal.owner, limit=limit)
+                visible: list[dict[str, Any]] = []
+                for item in items:
+                    item_workspace = str(item.get("workspace_id") or "")
+                    if item_workspace:
+                        try:
+                            self.teams.workspace_context(principal.owner, item_workspace, "tasks:read")
+                        except TeamAccessDenied:
+                            continue
+                    visible.append(item)
+                projected = self.task_reads.list(principal.owner, visible)
         except TeamAccessDenied as exc:
             raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
-        return {"items": [self._task(item) for item in items]}
+        return {"items": projected}
 
-    def get_task(self, principal: APIKeyPrincipal, task_id: str) -> dict[str, Any]:
-        value = self.database.get_task_details(principal.owner, task_id)
+    def get_task(self, principal: APIKeyPrincipal, task_id: str, query: dict[str, str]) -> dict[str, Any]:
+        value = self._task_access(principal, task_id, query)
+        return value
+
+    def get_task_events(self, principal: APIKeyPrincipal, task_id: str, query: dict[str, str]) -> dict[str, Any]:
+        value = self._task_access(principal, task_id, query)
+        return {"items": value.get("events", [])}
+
+    def _task_access(self, principal: APIKeyPrincipal, task_id: str, query: dict[str, str]) -> dict[str, Any]:
+        scope = self.database.get_task_scope(task_id)
+        if scope is None:
+            raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
+        requested_workspace = str(query.get("workspace_id") or "")
+        actual_workspace = str(scope.get("workspace_id") or "")
+        if requested_workspace:
+            try:
+                self.teams.workspace_context(principal.owner, requested_workspace, "tasks:read")
+            except TeamAccessDenied as exc:
+                raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+            if requested_workspace != actual_workspace:
+                raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
+        if actual_workspace:
+            if not requested_workspace:
+                try:
+                    self.teams.workspace_context(principal.owner, actual_workspace, "tasks:read")
+                except TeamAccessDenied as exc:
+                    raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна") from exc
+            value = self.task_reads.get_workspace(actual_workspace, task_id)
+        else:
+            if str(scope.get("owner") or "") != principal.owner:
+                raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
+            value = self.task_reads.get(principal.owner, task_id)
         if value is None:
             raise APIGatewayError(404, "TASK_NOT_FOUND", "Задача не найдена или недоступна")
-        return self._task(value)
+        return value
 
     def list_organizations(self, principal: APIKeyPrincipal) -> dict[str, Any]:
         return {"items": self.teams.list_organizations(principal.owner)}
@@ -214,12 +316,10 @@ class APIGateway:
         except BillingAccessDenied as exc:
             raise APIGatewayError(404, "ORGANIZATION_NOT_FOUND", "Organization not found or unavailable") from exc
 
-    def list_agents(self, principal: APIKeyPrincipal | None = None, query: dict[str, str] | None = None) -> dict[str, Any]:
+    def list_agents(self, principal: APIKeyPrincipal, query: dict[str, str] | None = None) -> dict[str, Any]:
         workspace_id = (query or {}).get("workspace_id")
         allowed_ids: set[str] | None = None
         if workspace_id:
-            if principal is None:
-                raise APIGatewayError(401, "UNAUTHORIZED", "Authentication required")
             try:
                 allowed_ids = set(self.teams.components(principal.owner, workspace_id, "agent"))
             except TeamAccessDenied as exc:
@@ -230,8 +330,26 @@ class APIGateway:
                 continue
             override = self.database.get_agent_override(manifest.id)
             enabled = manifest.enabled if override is None else override
-            items.append({"id": manifest.id, "status": "ACTIVE" if enabled else "DISABLED"})
+            summary = self.database.agent_task_summary(principal.owner, manifest.id, workspace_id)
+            items.append(safe_agent_view(manifest, enabled=enabled, task_summary=summary))
         return {"items": items}
+
+    def get_agent(self, principal: APIKeyPrincipal, agent_id: str, query: dict[str, str] | None = None) -> dict[str, Any]:
+        workspace_id = (query or {}).get("workspace_id")
+        if workspace_id:
+            try:
+                allowed_ids = set(self.teams.components(principal.owner, workspace_id, "agent"))
+            except TeamAccessDenied as exc:
+                raise APIGatewayError(404, "WORKSPACE_NOT_FOUND", "Workspace not found or unavailable") from exc
+            if agent_id not in allowed_ids:
+                raise APIGatewayError(404, "AGENT_NOT_FOUND", "Agent not found or unavailable")
+        manifest = self.agents.get(agent_id)
+        if manifest is None:
+            raise APIGatewayError(404, "AGENT_NOT_FOUND", "Agent not found or unavailable")
+        override = self.database.get_agent_override(manifest.id)
+        enabled = manifest.enabled if override is None else override
+        summary = self.database.agent_task_summary(principal.owner, manifest.id, workspace_id)
+        return safe_agent_view(manifest, enabled=enabled, task_summary=summary)
 
     def list_skills(self, principal: APIKeyPrincipal | None = None, query: dict[str, str] | None = None) -> dict[str, Any]:
         workspace_id = (query or {}).get("workspace_id")
@@ -254,6 +372,56 @@ class APIGateway:
         except ValueError as exc:
             raise APIGatewayError(400, "VALIDATION_ERROR", "Invalid limit") from exc
         return {"items": self.marketplace.catalog(search=query.get("search") or None, category=query.get("category") or None, item_type=query.get("type") or None, limit=limit)}
+
+    def list_workforce(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        if self.workforce is None:
+            raise APIGatewayError(503, "WORKFORCE_UNAVAILABLE", "AI Workforce unavailable")
+        try:
+            return {"items": self.workforce.catalog(
+                principal.owner, workspace_id=query.get("workspace_id") or None,
+                search=query.get("search") or None, category=query.get("category") or None,
+                kind=query.get("kind") or None,
+            )}
+        except AIWorkforceError as exc:
+            raise APIGatewayError(400, exc.code, "Workforce query rejected") from exc
+
+    def get_workforce_item(self, principal: APIKeyPrincipal, item_id: str, query: dict[str, str]) -> dict[str, Any]:
+        if self.workforce is None:
+            raise APIGatewayError(503, "WORKFORCE_UNAVAILABLE", "AI Workforce unavailable")
+        try:
+            return self.workforce.item(principal.owner, item_id, workspace_id=query.get("workspace_id") or None)
+        except (AIWorkforceError, MarketplaceError) as exc:
+            raise APIGatewayError(404, getattr(exc, "code", "MARKETPLACE_ITEM_NOT_FOUND"), "Workforce item unavailable") from exc
+
+    def workforce_team(self, principal: APIKeyPrincipal, query: dict[str, str]) -> dict[str, Any]:
+        if self.workforce is None or not query.get("workspace_id"):
+            raise APIGatewayError(400, "WORKSPACE_REQUIRED", "workspace_id is required")
+        try:
+            return {"items": self.workforce.team(principal.owner, str(query["workspace_id"]))}
+        except AIWorkforceError as exc:
+            raise APIGatewayError(404, exc.code, "Workspace unavailable") from exc
+
+    def workforce_action(self, principal: APIKeyPrincipal, item_id: str, action: str, value: dict[str, Any]) -> dict[str, Any]:
+        if self.workforce is None:
+            raise APIGatewayError(503, "WORKFORCE_UNAVAILABLE", "AI Workforce unavailable")
+        workspace_id = str(value.get("workspace_id") or "")
+        if not workspace_id:
+            raise APIGatewayError(400, "WORKSPACE_REQUIRED", "workspace_id is required")
+        try:
+            if action == "install":
+                return self.workforce.install(principal.owner, workspace_id, item_id, version=str(value.get("version") or "") or None, approval_id=str(value.get("approval_id") or "") or None, auto_update=bool(value.get("auto_update")))
+            if action == "update":
+                return self.workforce.update(principal.owner, workspace_id, item_id, version=str(value.get("version") or ""), approval_id=str(value.get("approval_id") or "") or None)
+            if action == "uninstall":
+                return self.workforce.uninstall(principal.owner, workspace_id, item_id, approval_id=str(value.get("approval_id") or ""))
+            if action == "integration":
+                pending = self.workforce.request_integration(principal.owner, workspace_id, item_id, str(value.get("provider") or ""), secret_reference=str(value.get("secret_reference") or "") or None, configuration=value.get("configuration") if isinstance(value.get("configuration"), dict) else {})
+                if value.get("approval_id"):
+                    return self.workforce.activate_integration(principal.owner, workspace_id, item_id, str(value.get("provider") or ""), approval_id=str(value["approval_id"]))
+                return pending
+        except (AIWorkforceError, MarketplaceError) as exc:
+            raise APIGatewayError(403, getattr(exc, "code", "WORKFORCE_DENIED"), "Workforce action denied") from exc
+        raise APIGatewayError(400, "ACTION_INVALID", "Workforce action invalid")
 
     def get_marketplace_item(self, item_id: str) -> dict[str, Any]:
         try:

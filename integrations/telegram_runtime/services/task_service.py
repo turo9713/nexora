@@ -17,6 +17,7 @@ SAFE_ERROR_CODES = {
     "NX_TASK_NOT_FOUND",
     "NX_TASK_CANCELLED",
     "NX_APPROVAL_EXPIRED",
+    "NX_WORKSPACE_REQUIRED",
     "NX_INTERNAL_ERROR",
 }
 
@@ -44,6 +45,8 @@ class TaskService:
 
     def _event(self, event_type: str, task: dict[str, Any], **metadata: Any) -> None:
         if self.event_bus is not None:
+            if task.get("workspace_id"):
+                metadata["workspace_id"] = task["workspace_id"]
             self.event_bus.publish(event_type, task_id=str(task["task_id"]), metadata=metadata)
 
     def new_task_id(self) -> str:
@@ -51,7 +54,15 @@ class TaskService:
         suffix = secrets.token_hex(3).upper()
         return f"NX-{date}-{suffix}"
 
-    def create(self, namespace: str, title: str, session_id: str, task_id: str | None = None) -> dict[str, Any]:
+    def create(
+        self,
+        namespace: str,
+        title: str,
+        session_id: str,
+        task_id: str | None = None,
+        *,
+        workspace_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         task_id = task_id or self.new_task_id()
         now = utc_now()
         task = {
@@ -77,10 +88,41 @@ class TaskService:
                 {"status": "NEW", "stage": "Создание задачи", "progress": 0, "at": now, "event": "CREATED"}
             ],
         }
+        if workspace_context is not None:
+            task.update(
+                organization_id=str(workspace_context["organization_id"]),
+                workspace_id=str(workspace_context["workspace_id"]),
+                creator_id=int(workspace_context["user_id"]),
+                assignee_id=None,
+            )
         self.repository.save(namespace, task)
         self._persist_platform(task)
         self._event("TASK_CREATED", task, status="NEW", progress=0, agent=task["assigned_agent"])
         return task
+
+    def bind_workspace(
+        self,
+        namespace: str,
+        task_id: str,
+        workspace_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        task = self.get(namespace, task_id)
+        if task is None:
+            raise KeyError("task not found")
+        selected = str(workspace_context["workspace_id"])
+        existing = task.get("workspace_id")
+        if existing and existing != selected:
+            raise PermissionError("task workspace mismatch")
+        updated = dict(task)
+        updated.update(
+            organization_id=str(workspace_context["organization_id"]),
+            workspace_id=selected,
+            creator_id=int(workspace_context["user_id"]),
+            assignee_id=task.get("assignee_id"),
+        )
+        self.repository.save(namespace, updated)
+        self._persist_platform(updated)
+        return updated
 
     def get(self, namespace: str, task_id: str) -> dict[str, Any] | None:
         return self.repository.get(namespace, task_id)

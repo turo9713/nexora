@@ -11,7 +11,7 @@
     "description": {"type": "string", "minLength": 5, "maxLength": 500},
     "author": {"type": "string", "const": "Nexora"},
     "category": {"type": "string", "enum": ["content", "research", "development", "analytics"]},
-    "agent": {"type": "string", "enum": ["content", "research", "developer", "analytics"]},
+    "agent": {"type": "string", "enum": ["content", "research", "developer", "analytics", "qa"]},
     "permissions": {
       "type": "object",
       "additionalProperties": false,

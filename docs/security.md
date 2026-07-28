@@ -2,6 +2,24 @@
 
 Nexora applies deny-by-default at every ingress and execution boundary.
 
+## Private state storage (v3.4.2)
+
+Nexora state writers create temporary files with mode `0600`, flush and fsync
+content, atomically replace the destination, and verify the final private mode.
+State directories are normalized to `0700`. The helper rejects symbolic-link
+escapes and is shared by task, history, context, session, approval, action, and
+audit repositories.
+
+Administrators can inspect or repair legacy modes without changing file data:
+
+```bash
+python -m nexora.storage.repair_permissions --check
+python -m nexora.storage.repair_permissions --apply
+```
+
+Only the allowlisted task/state roots are traversed, symbolic links are not
+followed, and apply mode emits a sanitized audit record.
+
 ## Authentication and isolation
 
 - Telegram requires an exact private owner allowlist; unknown users receive

@@ -9,7 +9,26 @@ from typing import Any
 from nexora.skills.validators import SkillManifestValidator, SkillValidationError
 
 
-BUILTIN_SKILLS = ("content-writer", "research", "github-assistant", "github-agent", "analytics")
+BUILTIN_SKILLS = (
+    "content-writer",
+    "research",
+    "github-assistant",
+    "github-agent",
+    "analytics",
+    "secure-code-review",
+    "runtime-testing-patterns",
+    "e2e-testing-patterns",
+    "technical-documentation",
+    "diagram-maker",
+    "markdown-authoring",
+    "project-documentation",
+    "api-design-review",
+    "python-quality",
+    "threat-modeling",
+    "database-design-review",
+    "architecture-review",
+    "accessibility-review",
+)
 SKILL_STATES = {"DISCOVERED", "VALIDATED", "INSTALLED", "ACTIVE", "DISABLED", "FAILED", "REMOVED"}
 
 

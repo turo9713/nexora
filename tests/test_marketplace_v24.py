@@ -174,6 +174,9 @@ def test_migration_008_backup_integrity_and_rollback(tmp_path: Path) -> None:
         assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 7
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert publisher["status"] == "PENDING"
+    database.rollback(13)
+    database.rollback(12)
+    database.rollback(11)
     database.rollback(10)
     database.rollback(9)
     database.rollback(8)

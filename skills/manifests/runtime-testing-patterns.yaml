@@ -1,0 +1,28 @@
+id: runtime-testing-patterns
+name: Runtime Testing Patterns
+version: 1.0.0
+description: Design deterministic unit and integration test coverage from workspace evidence without executing commands.
+author: Nexora
+category: development
+agent: qa
+permissions:
+  filesystem:
+    scope: [workspace]
+    mode: read_only
+  network:
+    mode: none
+  shell:
+    enabled: false
+  production:
+    enabled: false
+risk:
+  level: low
+tools: [repository_analysis, reporting]
+security:
+  sandbox:
+    enabled: true
+approval:
+  required: false
+compatibility:
+  min_platform: 1.7.0
+status: DISABLED

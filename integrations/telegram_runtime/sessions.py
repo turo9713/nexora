@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+from nexora.storage.secure_io import ensure_private_directory, secure_atomic_write_json
 
 
 DEFAULT_SESSIONS_PATH = Path("/workspace/nexora/runtime/state/telegram_sessions")
@@ -32,10 +33,7 @@ class DialogueSessionStore:
         self.max_characters = max_characters
 
     def _ensure_root(self) -> None:
-        if self.root.is_symlink():
-            raise RuntimeError("unsafe dialogue session directory")
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.root, 0o700)
+        ensure_private_directory(self.root)
 
     def new(self) -> dict[str, Any]:
         now = int(time.time())
@@ -47,6 +45,21 @@ class DialogueSessionStore:
             "last_task_id": None,
             "turns": [],
         }
+
+    def bind_workspace(
+        self,
+        session: dict[str, Any],
+        *,
+        owner_namespace: str,
+        organization_id: str,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        updated = dict(session)
+        updated["owner_namespace"] = str(owner_namespace)
+        updated["organization_id"] = str(organization_id)
+        updated["workspace_id"] = str(workspace_id)
+        updated["updated_at"] = int(time.time())
+        return updated
 
     def load(self) -> dict[str, Any] | None:
         if not self.path.exists():
@@ -79,6 +92,9 @@ class DialogueSessionStore:
             return False
         if session.get("active_task_id") is not None and not isinstance(session.get("active_task_id"), str):
             return False
+        for key in ("owner_namespace", "organization_id", "workspace_id"):
+            if session.get(key) is not None and not isinstance(session.get(key), str):
+                return False
         turns = session.get("turns")
         if not isinstance(turns, list):
             return False
@@ -129,18 +145,7 @@ class DialogueSessionStore:
         if not self._is_valid(session):
             raise ValueError("invalid dialogue session")
         self._ensure_root()
-        temporary = self.root / f".active.{uuid4().hex}.tmp"
-        data = json.dumps(session, ensure_ascii=False, indent=2)
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-            os.chmod(self.path, 0o600)
-        finally:
-            temporary.unlink(missing_ok=True)
+        secure_atomic_write_json(self.path, session, root=self.root)
 
     def clear(self) -> None:
         if self.path.is_symlink():

@@ -36,6 +36,8 @@ class ExecutionService:
         notifier: Notifier,
         event_bus: Any | None = None,
         execution_guard: Callable[[], bool] | None = None,
+        source: str = "telegram_runtime_v1.4",
+        created_by: str = "telegram-owner",
     ) -> None:
         self.orchestrator = orchestrator
         self.tasks = tasks
@@ -47,6 +49,8 @@ class ExecutionService:
         self.notifier = notifier
         self.event_bus = event_bus
         self.execution_guard = execution_guard
+        self.source = source
+        self.created_by = created_by
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nexora-task")
         self._lock = threading.Lock()
 
@@ -93,11 +97,11 @@ class ExecutionService:
                     "id": runtime_task_id,
                     "title": str(self.tasks.get(namespace, task_id).get("title", task_id))[:100],
                     "description": prompt,
-                    "created_by": "telegram-owner",
+                    "created_by": self.created_by,
                     "workflow": self.workflow_name,
                     "parent_task_id": session.get("last_task_id"),
                     "context": {
-                        "source": "telegram_runtime_v1.4",
+                        "source": self.source,
                         "external_actions_allowed": False,
                         "public_task_id": task_id,
                         "dialogue_session_id": session_id,

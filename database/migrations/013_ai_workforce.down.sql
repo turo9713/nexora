@@ -1,0 +1,11 @@
+PRAGMA foreign_keys = OFF;
+DROP TRIGGER IF EXISTS marketplace_earnings_immutable_delete;
+DROP TRIGGER IF EXISTS marketplace_earnings_immutable_update;
+DROP TABLE IF EXISTS marketplace_earnings;
+DROP TABLE IF EXISTS integration_wizards;
+DROP TABLE IF EXISTS workforce_resources;
+DROP TABLE IF EXISTS workforce_installations;
+DROP TABLE IF EXISTS marketplace_metadata;
+DELETE FROM plans WHERE id IN ('starter','business');
+DELETE FROM schema_migrations WHERE version=13;
+PRAGMA foreign_keys = ON;

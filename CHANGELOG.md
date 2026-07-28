@@ -2,6 +2,141 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.0.0] - 2026-07-28
+
+### Added
+
+- AI Workforce Marketplace with 14 official AI employees, six workflow packs,
+  four skills, categories, search, compatibility, ratings, changelogs, pricing
+  metadata, documentation, and install/update/uninstall lifecycle.
+- One-click declarative provisioning of workspace bindings, memory,
+  permissions, workflows, prompts, and settings.
+- Protected integration wizard for Telegram, Email, Google, Slack, GitHub,
+  Webhook, and API Key secret references.
+- My AI Team, Developer Portal, revenue-share accounting foundation, private
+  catalog visibility, and Free/Starter/Pro/Team/Business/Enterprise plans.
+- Authenticated Dashboard and `/api/v1/workforce` APIs, reversible migration
+  013, architecture/ER documentation, and production deployment notes.
+
+### Security
+
+- Package execution remains deny-by-default and passes existing Marketplace,
+  Policy Engine, approval, RBAC, tenant isolation, and audit controls.
+- Raw integration credentials, shell, Docker, root, production access, and
+  direct OpenClaw Gateway access are prohibited.
+
+## [3.5.0] - 2026-07-23
+
+### Added
+
+- Tenant-scoped Enterprise Security Center, policy registry and immutable
+  hash-chained security events.
+- Approval-gated policy creation, versioning, and rollback without changing
+  the existing authentication or runtime execution paths.
+- Provider-neutral SAML, OIDC, and OAuth foundation; every external provider
+  remains disabled until separately configured.
+- SLA calculations, read-only storage integrity/permission checks, deployment
+  profiles, and compliance control reporting.
+- Authenticated, rate-limited Enterprise Dashboard and `/api/v1` read APIs.
+- Reversible migration 012 and enterprise unit, integration, and security tests.
+
+### Security
+
+- Enterprise resources are organization/workspace scoped through the existing
+  RBAC and tenant isolation layer.
+- The Dashboard remains read-only for policy changes; policy mutations require
+  a valid, one-time approval in the service layer.
+- Storage checks use read-only SQLite access and do not expose filesystem paths.
+
+## [3.4.2] - 2026-07-22
+
+### Fixed
+
+- All JSON task, history, session, action, approval, context, and audit writers
+  now use one atomic private-storage helper with explicit `0600` file and
+  `0700` directory modes.
+- Telegram tasks are bound to an authorized organization and workspace before
+  creation, allowing their durable events to reach the correctly scoped SSE
+  Dashboard stream.
+- `/tasks` and `/tasks/{id}` consume authenticated workspace-filtered SSE with
+  cursor-based reconnect, event-ID deduplication, and a safe manual refresh.
+- Telegram `/status` records a sanitized `TELEGRAM_STATUS_VIEWED` audit event
+  without invoking the model.
+
+### Security
+
+- Workspace selection is deterministic and membership-checked; user text cannot
+  choose a workspace and missing or revoked access fails closed.
+- `python -m nexora.storage.repair_permissions` checks or repairs only
+  allowlisted state roots without following symbolic links.
+
+## [3.4.0] - 2026-07-22
+
+### Added
+
+- Tenant-scoped `/home`, activity, notifications, workspace overview, agent
+  status, operations analytics, and safe onboarding Dashboard pages.
+- Authenticated SSE task updates with durable Event Bus cursors, automatic
+  reconnect, and workspace filtering instead of browser polling.
+- Scoped read-only public API endpoints for dashboard, activity, notifications,
+  and agent status.
+- Reversible migration 011 for notifications, agent status history, dashboard
+  metrics, and indexes over the existing activity journal.
+
+### Security
+
+- Operational projections expose only allowlisted fields; raw metadata,
+  context, logs, secrets, and provider/Gateway access remain unavailable.
+- All reads retain authentication, RBAC, tenant isolation, rate limits, request
+  correlation, and audit. Notification read state requires session CSRF.
+- Task Control Center remains read-only and no tool, shell, service, Docker, or
+  production mutation was added.
+
+## [3.3.0] - 2026-07-22
+
+### Added
+
+- Read-only Task Control Center with owner-scoped task list, safe task details,
+  existing lifecycle progress, and sanitized event timelines.
+- Authenticated task list, detail, and event API reads with existing scopes,
+  rate limits, request/correlation identifiers, audit, and tenant isolation.
+
+### Security
+
+- Dashboard task mutations were removed from the Task Control Center; the UI
+  cannot start, continue, cancel, or otherwise change a task.
+- Timeline payloads are allowlisted and exclude raw event metadata, prompts,
+  secrets, tracebacks, and Gateway access.
+- Workspace-bound tasks require current membership and `tasks:read` RBAC even
+  when the caller omits `workspace_id`; shared reads never open another owner's
+  JSON context.
+
+## [3.2.0] - 2026-07-22
+
+### Added
+
+- Read-only Agent Control Center with registry metadata, safe task counts, and last activity.
+- Authenticated `GET /api/v1/agents/{id}` with existing scopes, rate limits, audit, and workspace isolation.
+
+### Security
+
+- Agent mutation controls were removed from the Dashboard surface; no shell, permission editing, secret access, or Gateway call is available.
+- Agent statistics remain owner- and workspace-scoped and expose neither prompts nor manifest source paths.
+
+## [3.1.0] - 2026-07-21
+
+### Added
+
+- Owner-only Dashboard task creation and bounded web dialogue through the existing OpenClaw provider.
+- Live task progress polling, safe cancellation, approval handoff, and downloadable sanitized text results.
+- Dedicated Dashboard dialogue state with idempotency, 6-hour TTL, 12-turn, and 12,000-character limits.
+
+### Security
+
+- Gateway credentials remain in a read-only secret file and are never returned to the browser or stored in task context.
+- Web task writes require an authenticated admin session, CSRF token, deny-by-default permission, Policy check, and audit event.
+- Dashboard and Telegram dialogue stores are isolated; Gateway remains private.
+
 ## [3.0.0] - 2026-07-21
 
 ### Added

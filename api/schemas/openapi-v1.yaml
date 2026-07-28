@@ -1,13 +1,44 @@
 openapi: 3.1.0
 info:
   title: Nexora Public API
-  version: 1.5.0
+  version: 4.0.0
 servers:
   - url: https://127.0.0.1:18881/api/v1
     description: Localhost-only production staging endpoint
 security:
   - bearerAuth: []
 paths:
+  /dashboard:
+    get:
+      operationId: getUserDashboard
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Tenant-scoped operational dashboard summary}
+        "404": {description: Workspace not found or unavailable}
+  /activity:
+    get:
+      operationId: listActivity
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        "200": {description: Sanitized workspace activity feed}
+  /notifications:
+    get:
+      operationId: listNotifications
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+        - {name: status, in: query, required: false, schema: {type: string, enum: [UNREAD, READ]}}
+      responses:
+        "200": {description: Owner- and workspace-scoped notifications}
+  /agents/status:
+    get:
+      operationId: listAgentStatus
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Safe workspace agent operational state}
   /creators/{id}:
     get:
       operationId: getCreator
@@ -29,8 +60,11 @@ paths:
   /tasks:
     get:
       operationId: listTasks
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
       responses:
-        "200": {description: Owner-scoped tasks}
+        "200": {description: Safe owner- or workspace-scoped read-only task inventory}
     post:
       operationId: createTask
       requestBody:
@@ -45,14 +79,35 @@ paths:
       operationId: getTask
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
       responses:
-        "200": {description: Safe task details}
+        "200": {description: Safe read-only task details from the existing runtime state}
         "404": {description: Task not found or unavailable}
+  /tasks/{id}/events:
+    get:
+      operationId: listTaskEvents
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+      responses:
+        "200": {description: Sanitized read-only lifecycle events for an accessible task}
+        "404": {description: Task or workspace not found or unavailable}
   /agents:
     get:
       operationId: listAgents
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
       responses:
-        "200": {description: Safe agent states}
+        "200": {description: Safe owner- or workspace-scoped Agent Control Center inventory}
+  /agents/{id}:
+    get:
+      operationId: getAgent
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^[a-z][a-z0-9-]{1,62}$"}}
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Safe read-only agent details and owner-scoped activity summary}
+        "404": {description: Agent or workspace not found or unavailable}
   /skills:
     get:
       operationId: listSkills
@@ -202,6 +257,91 @@ paths:
       operationId: publishMarketplaceItem
       responses:
         "201": {description: Declarative package validated and published}
+  /workforce:
+    get:
+      operationId: listAIWorkforce
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+        - {name: category, in: query, required: false, schema: {type: string}}
+        - {name: type, in: query, required: false, schema: {type: string, enum: [AGENT, SKILL, TEMPLATE]}}
+        - {name: search, in: query, required: false, schema: {type: string, maxLength: 100}}
+      responses:
+        "200": {description: Security-validated AI employees, skills, and workflow packs}
+  /workforce/team:
+    get:
+      operationId: listInstalledAIEmployees
+      parameters:
+        - {name: workspace_id, in: query, required: true, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+      responses:
+        "200": {description: Tenant-scoped installed AI team with usage summaries}
+  /workforce/{id}:
+    get:
+      operationId: getAIWorkforcePackage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^[a-z0-9][a-z0-9-]{1,62}$"}}
+        - {name: workspace_id, in: query, required: false, schema: {type: string, pattern: "^WS-[A-F0-9]{12}$"}}
+      responses:
+        "200": {description: Sanitized package card, compatibility, permissions, and documentation}
+        "404": {description: Package not found or unavailable}
+  /workforce/{id}/install:
+    post:
+      operationId: installAIWorkforcePackage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "201": {description: Package and declarative workspace resources installed}
+        "202": {description: Approval required}
+  /workforce/{id}/update:
+    post:
+      operationId: updateAIWorkforcePackage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Compatible package update applied with rollback state preserved}
+  /workforce/{id}/uninstall:
+    post:
+      operationId: uninstallAIWorkforcePackage
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "202": {description: One-time approval required before uninstall}
+  /workforce/{id}/integration:
+    post:
+      operationId: configureAIWorkforceIntegration
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "202": {description: Protected secret reference accepted; activation requires approval}
+  /policies:
+    get:
+      operationId: listEnterprisePolicies
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Tenant-scoped policy inventory}
+        "404": {description: Workspace not found or unavailable}
+  /security/events:
+    get:
+      operationId: listEnterpriseSecurityEvents
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200}}
+      responses:
+        "200": {description: Sanitized immutable security event inventory}
+  /sla:
+    get:
+      operationId: getEnterpriseSla
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Tenant-scoped SLA metrics}
+  /storage/health:
+    get:
+      operationId: getStorageHealth
+      parameters:
+        - {name: workspace_id, in: query, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Safe storage health summary without internal paths}
 components:
   securitySchemes:
     bearerAuth:

@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 
-PROJECT = Path(__file__).resolve().parents[1]
+PROJECT = Path(__file__).absolute().parents[1]
 if PROJECT.name != "nexora":
     raise SystemExit("Run this example from a checkout directory named 'nexora'.")
 sys.path.insert(0, str(PROJECT.parent))

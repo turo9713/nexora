@@ -8,9 +8,14 @@ class DashboardPermissions:
 
     ALLOWED = {
         "health:read",
+        "operations:read",
+        "notifications:read",
+        "notifications:write",
         "tasks:read",
+        "tasks:create",
+        "tasks:continue",
+        "tasks:cancel",
         "agents:read",
-        "agents:request_change",
         "approvals:read",
         "approvals:decide",
         "audit:read",
@@ -37,10 +42,13 @@ class DashboardPermissions:
         "admin:manage",
         "marketplace:read",
         "marketplace:manage",
+        "workforce:read",
+        "workforce:manage",
         "creator:read",
         "creator:manage",
         "agent_ecosystem:read",
         "agent_ecosystem:manage",
+        "enterprise:read",
     }
 
     def authorize(self, session: Session | None, permission: str) -> bool:

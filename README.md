@@ -3,9 +3,11 @@
 **Self-hosted AI Agent Platform** — a security-first runtime for tasks, agents, declarative
 skills, approvals, audit events, a web dashboard, and a scoped public API.
 
-Nexora 3.0 adds an AI Agent Ecosystem on top of the security-reviewed Creator
-Marketplace: Agent Builder, Agent Teams, safe planning, Memory 2.0, evaluation,
-and a declarative SDK foundation. The repository contains the open-source
+Nexora 3.4.2 adds private atomic task storage and workspace-bound Telegram
+realtime events to the tenant-scoped operations experience on top of the read-only
+Task Control Center: a user home, Server-Sent Event task updates, activity,
+notifications, workspace and agent status views, analytics, and safe onboarding.
+The repository contains the open-source
 platform core and safe examples. Production configuration, credentials,
 customer data, private integrations, commercial skills, and VPS automation are
 deliberately outside the public boundary.
@@ -13,7 +15,11 @@ deliberately outside the public boundary.
 ## Features
 
 - Task lifecycle, workflow routing, progress, cancellation, and idempotency.
+- Read-only Task Control Center with safe lifecycle timelines and no UI mutations.
+- User operations dashboard with workspace metrics, activity feed, notifications,
+  agent status, analytics, and event-driven task updates.
 - Eight deny-by-default agent manifests and a policy gate before execution.
+- Read-only Agent Control Center with task counts and last activity; no UI mutation controls.
 - Declarative, schema-validated skills; no arbitrary plugin code loading.
 - One-time, expiring approvals for risky operations.
 - Sanitized event and tamper-evident audit records.
@@ -90,6 +96,13 @@ the fixed non-root container UID. Every long-running container remains UID
 
 ## Quick Start
 
+After signing in, open **Главная** (`/home`) for the current workspace summary,
+activity, notifications, and realtime connection state. Open **Tasks** to inspect your task list, current runtime
+progress, safe details, and lifecycle timeline. Task Control Center is strictly
+read-only: start, continuation, approval, and cancellation stay on the existing
+authorized runtime surfaces. Telegram remains available as an independent
+dialogue surface.
+
 Open the Dashboard URL from the installer and sign in with the one-time password
 shown during installation. Run the offline, non-publishing demo:
 
@@ -102,6 +115,21 @@ no network request and no production action.
 
 See [Getting Started](docs/getting-started.md) for health checks and safe local
 access.
+
+## User Operations (v3.4)
+
+The Dashboard exposes `/home`, `/activity`, `/notifications`, `/workspace`,
+`/agents/status`, `/analytics`, and `/onboarding`. Task updates use authenticated
+same-origin Server-Sent Events with automatic reconnect and workspace filtering;
+the browser does not poll the task API continuously. Operational pages are read
+projections and never call tools, shell, Docker, or OpenClaw. The only local UI
+write is CSRF-protected notification read state.
+
+Scoped API keys can read `GET /api/v1/dashboard`, `GET /api/v1/activity`,
+`GET /api/v1/notifications`, and `GET /api/v1/agents/status` through the same
+RBAC, tenant, rate-limit, request/correlation ID, and audit controls. See
+[User Dashboard](docs/user-dashboard.md), [Realtime](docs/realtime.md),
+[Notifications](docs/notifications.md), and [Operations](docs/operations.md).
 
 ## Templates and Playground
 
@@ -194,6 +222,33 @@ The versioned `/api/v1` facade supports owner-scoped tasks, agents, skills, and
 approval-gated webhooks. API keys are shown once and stored only as scrypt
 hashes; scopes default to deny-all. See [docs/api.md](docs/api.md).
 
+## Enterprise Operations (v3.5)
+
+The Enterprise layer adds a tenant-scoped Security Center, approval-gated and
+versioned policies, immutable security events, SLA metrics, storage health, and
+validated deployment profiles. The SSO layer is foundation-only: SAML, OIDC,
+and OAuth adapters are disabled and production authentication is unchanged.
+
+Dashboard routes are `/security-center`, `/policies`, `/sla`,
+`/storage-health`, and `/enterprise`. Public API reads require the explicit
+`enterprise:read` scope. See [docs/enterprise.md](docs/enterprise.md) and
+[docs/policies.md](docs/policies.md).
+
+## AI Workforce Marketplace (v4.0)
+
+Install validated AI employees, workflow packs, and skills from the
+authenticated Marketplace without editing YAML. One-click installation creates
+tenant-scoped memory, permission, prompt, workflow, setting, and workspace
+bindings; it never executes arbitrary package code. Use `/marketplace`,
+`/marketplace/workflows`, `/marketplace/skills`, `/ai-team`, and `/developer`.
+
+Integrations accept protected secret references only and activate through the
+existing one-time approval flow. OpenClaw Gateway remains private and is never
+called by Dashboard frontend or Marketplace APIs. See
+[AI Workforce Marketplace](docs/ai-workforce-marketplace.md),
+[v4 architecture and ER diagram](docs/architecture-v4.md), and
+[deployment and rollback](docs/deployment-v4.md).
+
 ## Development
 
 ```bash
@@ -210,9 +265,10 @@ and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Roadmap
 
-- **v3.1:** curated declarative agent/team bundles.
-- **v3.5:** expanded evaluation datasets and policy simulations.
-- **v4.0:** optional managed control plane while preserving self-hosting.
+- **v4.1:** signed package provenance, staged tenant rollouts, compatibility
+  preview, and administrator-controlled update channels.
+- **v4.2:** integration health observability and portable workforce bundles.
+- **v5.0:** optional managed control plane while preserving self-hosting.
 
 ## Release and rollback
 
