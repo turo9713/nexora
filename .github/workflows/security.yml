@@ -23,7 +23,7 @@ jobs:
       - name: Repository and history secret scan
         run: bash scripts/secret-scan.sh
       - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Dependency audit
