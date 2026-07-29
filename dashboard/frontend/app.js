@@ -189,11 +189,21 @@ function taskSummaryRow(item){
 
 async function workbenchPage(){
   title("Nexora Workbench");activate("/workbench");
-  const [summary,tasks]=await Promise.all([api("/api/dashboard"),api("/api/tasks?limit=6")]);
+  const [summary,tasks,agents]=await Promise.all([api("/api/dashboard"),api("/api/tasks?limit=12"),api("/api/agents")]);
   clear();
+  const overview=node("section",undefined,"workbench-overview");
+  overview.append(
+    metric("Активные задачи",summary.active_tasks),
+    metric("Завершено",summary.completed_tasks),
+    metric("Доступные агенты",(agents.items||[]).filter(item=>item.status!=="DISABLED").length),
+    metric("Ожидают подтверждения",summary.pending_approvals)
+  );
   const hero=node("section",undefined,"workbench-hero");
   const copy=node("div",undefined,"workbench-copy");
-  copy.append(node("p","NEXORA AGENT WORKBENCH","eyebrow"),node("h2","Опишите результат — агенты соберут рабочий план"),node("p","Задача проходит через Orchestrator, Policy Engine и существующий runtime. Опасные действия по-прежнему требуют отдельного подтверждения.","muted"));
+  copy.append(node("p","NEXORA AGENT WORKBENCH","eyebrow"),node("h2","Поставьте задачу своей AI-команде"),node("p","Опишите ожидаемый результат обычными словами. Orchestrator безопасно подберёт специалиста, workflow и доступные инструменты.","muted"));
+  const routeInfo=node("div",undefined,"workbench-route-info");
+  routeInfo.append(badge("Автоподбор агента"),node("span","Policy Engine → Workflow → Result","muted"));
+  copy.append(routeInfo);
   const form=node("form",undefined,"workbench-composer");
   const input=node("textarea");input.name="message";input.placeholder="Например: проанализируй идею Telegram-бота для учёта расходов и подготовь план MVP";input.maxLength=12000;input.required=true;
   const submit=node("button","Запустить агентов","primary");submit.type="submit";
@@ -201,12 +211,33 @@ async function workbenchPage(){
   form.append(input,submit,hint);
   form.onsubmit=async event=>{event.preventDefault();const message=input.value.trim();if(!message)return;submit.disabled=true;submit.textContent="Создаём задачу…";try{const result=await api("/api/workbench/tasks",{method:"POST",body:JSON.stringify({message,workspace_id:summary.workspace.id,idempotency_key:requestKey("task")})});navigate(`/workbench/tasks/${encodeURIComponent(result.task_id||result.id)}`)}catch(error){submit.disabled=false;submit.textContent="Запустить агентов";alert(error.message)}};
   const suggestions=node("div",undefined,"prompt-suggestions");
-  ["Подготовь план запуска SaaS-продукта","Проанализируй архитектуру проекта и найди риски","Создай структуру статьи и чек-лист качества"].forEach(text=>{const button=node("button",text,"prompt-chip");button.type="button";button.onclick=()=>{input.value=text;input.focus()};suggestions.append(button)});
+  ["Подготовь план запуска SaaS-продукта","Проанализируй архитектуру и найди риски","Создай контент-план на месяц","Подготовь исследование рынка"].forEach(text=>{const button=node("button",text,"prompt-chip");button.type="button";button.onclick=()=>{input.value=text;input.focus()};suggestions.append(button)});
   form.append(suggestions);hero.append(copy,form);
+  const team=card("Доступная AI-команда",true);team.classList.add("full","workbench-team");
+  const roster=node("div",undefined,"workbench-agent-roster");
+  (agents.items||[]).filter(item=>item.status!=="DISABLED").slice(0,8).forEach(item=>{
+    const agent=node("button",undefined,"workbench-agent");agent.type="button";
+    agent.append(node("span",undefined,"agent-dot"),node("strong",item.name),node("small",item.description||item.role,"muted"));
+    agent.title="Orchestrator назначает агента автоматически";agent.onclick=()=>navigate(`/agents/${encodeURIComponent(item.id)}`);
+    roster.append(agent);
+  });
+  if(!roster.childNodes.length)roster.append(node("div","Активные агенты пока недоступны.","empty"));
+  team.append(node("p","Специалист назначается автоматически с учётом политики и типа задачи. Нажмите на агента, чтобы посмотреть его возможности.","muted"),roster);
   const recent=card("Последние задачи",true);recent.classList.add("full","workbench-recent");
-  (tasks.items||[]).forEach(item=>recent.append(taskSummaryRow(item)));
-  if(!tasks.items?.length)recent.append(node("div","Здесь появятся выполненные и активные задачи.","empty"));
-  el("content").append(hero,recent);
+  const filters=node("div",undefined,"workbench-task-filters");
+  const taskList=node("div",undefined,"workbench-task-list");
+  const busy=new Set(["NEW","CLARIFYING","QUEUED","PLANNING","IN_PROGRESS","WAITING_APPROVAL"]);
+  const renderTasks=filter=>{
+    const visible=(tasks.items||[]).filter(item=>filter==="active"?busy.has(item.status):filter==="completed"?item.status==="COMPLETED":true);
+    taskList.replaceChildren();
+    visible.forEach(item=>taskList.append(taskSummaryRow(item)));
+    if(!visible.length)taskList.append(node("div","В этой категории задач пока нет.","empty"));
+    filters.querySelectorAll("button").forEach(button=>button.classList.toggle("active",button.dataset.filter===filter));
+  };
+  [["all","Все"],["active","В работе"],["completed","Готовые"]].forEach(([value,label])=>{const button=node("button",label,"secondary");button.type="button";button.dataset.filter=value;button.onclick=()=>renderTasks(value);filters.append(button)});
+  const allTasks=node("button","Открыть все задачи","secondary");allTasks.type="button";allTasks.onclick=()=>navigate("/tasks");filters.append(allTasks);
+  recent.append(filters,taskList);renderTasks("all");
+  el("content").append(overview,hero,team,recent);
 }
 
 async function workbenchTaskPage(id){

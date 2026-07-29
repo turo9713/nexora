@@ -2,6 +2,18 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.1.0] - 2026-07-30
+
+### Added
+
+- A daily-use Workbench overview with task metrics, the available AI roster,
+  quick task scenarios, and filtered recent results.
+
+### Changed
+
+- The Workbench now explains that the existing Orchestrator selects the agent
+  automatically instead of presenting a misleading manual assignment control.
+
 ## [4.0.1] - 2026-07-30
 
 ### Changed

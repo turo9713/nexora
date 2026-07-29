@@ -55,6 +55,16 @@ def wait_for(app, task_id: str, status: str = "COMPLETED") -> dict:
     raise AssertionError(f"task did not reach {status}")
 
 
+def test_workbench_home_exposes_honest_agent_routing_and_history_filters() -> None:
+    script = (Path(__file__).resolve().parents[1] / "frontend" / "app.js").read_text(encoding="utf-8")
+    assert 'api("/api/agents")' in script
+    assert "Автоподбор агента" in script
+    assert "Orchestrator назначает агента автоматически" in script
+    assert '["all","Все"]' in script
+    assert '["active","В работе"]' in script
+    assert '["completed","Готовые"]' in script
+
+
 def test_dashboard_create_continue_idempotency_and_safe_download(dashboard_factory) -> None:
     app, config = dashboard_factory()
     runtime = attach_runtime(app, config)
