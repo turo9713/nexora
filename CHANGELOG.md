@@ -2,6 +2,15 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.0.1] - 2026-07-30
+
+### Changed
+
+- Dashboard navigation is grouped into six focused tabs: Work, AI, Team,
+  Marketplace, Platform, and Enterprise.
+- The active navigation tab now follows the current route, persists for the
+  browser session, and remains usable on narrow mobile screens.
+
 ## [4.0.0] - 2026-07-28
 
 ### Added
