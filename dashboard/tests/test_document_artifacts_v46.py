@@ -63,6 +63,16 @@ def test_docx_is_macro_free_without_external_relationships() -> None:
         assert document.count("<w:tbl>") >= 2
 
 
+def test_docx_builds_structured_table_for_excel_intent_without_markdown_table() -> None:
+    task = sample_task()
+    task["result"] = "## Сравнение\n- Runtime готов\n- Telegram готов"
+    payload = render_docx(task)
+    with zipfile.ZipFile(io.BytesIO(payload)) as package:
+        document = package.read("word/document.xml").decode("utf-8")
+        assert document.count("<w:tbl>") >= 2
+        assert "Структурированные данные" in document
+
+
 def test_pdf_embeds_cyrillic_font_and_has_no_active_actions() -> None:
     payload = render_pdf(sample_task())
     assert payload.startswith(b"%PDF-")

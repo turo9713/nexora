@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -55,6 +56,7 @@ class TaskService:
         self.progress = progress or ProgressService()
         self.database = database
         self.event_bus = event_bus
+        self._state_lock = threading.RLock()
 
     def _persist_platform(self, task: dict[str, Any]) -> None:
         if self.database is not None:
@@ -145,14 +147,15 @@ class TaskService:
         return self.repository.get(namespace, task_id)
 
     def transition(self, namespace: str, task_id: str, status: str, **kwargs: Any) -> dict[str, Any]:
-        task = self.get(namespace, task_id)
-        if task is None:
-            raise KeyError("task not found")
-        if task.get("cancellation_requested") and status != "CANCELLED":
-            return task
-        updated = self.progress.transition(task, status, **kwargs)
-        self.repository.save(namespace, updated)
-        self._persist_platform(updated)
+        with self._state_lock:
+            task = self.get(namespace, task_id)
+            if task is None:
+                raise KeyError("task not found")
+            if task.get("cancellation_requested") and status != "CANCELLED":
+                return task
+            updated = self.progress.transition(task, status, **kwargs)
+            self.repository.save(namespace, updated)
+            self._persist_platform(updated)
         event_type = "TASK_UPDATED"
         if status == "COMPLETED":
             event_type = "TASK_COMPLETED"
@@ -162,30 +165,31 @@ class TaskService:
         return updated
 
     def update_fields(self, namespace: str, task_id: str, **fields: Any) -> dict[str, Any]:
-        task = self.get(namespace, task_id)
-        if task is None:
-            raise KeyError("task not found")
-        updated = dict(task)
-        allowed = {
-            "result_summary",
-            "error_code",
-            "cancellation_requested",
-            "pending_approval_id",
-            "last_runtime_task_id",
-            "turn_number",
-            "assigned_agent",
-        }
-        for key, value in fields.items():
-            if key not in allowed:
-                raise ValueError("unsupported task field")
-            if key == "result_summary":
-                value = _clean_text(value, 1500)
-            if key == "error_code" and value is not None and value not in SAFE_ERROR_CODES:
-                raise ValueError("unsafe error code")
-            updated[key] = value
-        updated["updated_at"] = utc_now()
-        self.repository.save(namespace, updated)
-        self._persist_platform(updated)
+        with self._state_lock:
+            task = self.get(namespace, task_id)
+            if task is None:
+                raise KeyError("task not found")
+            updated = dict(task)
+            allowed = {
+                "result_summary",
+                "error_code",
+                "cancellation_requested",
+                "pending_approval_id",
+                "last_runtime_task_id",
+                "turn_number",
+                "assigned_agent",
+            }
+            for key, value in fields.items():
+                if key not in allowed:
+                    raise ValueError("unsupported task field")
+                if key == "result_summary":
+                    value = _clean_text(value, 1500)
+                if key == "error_code" and value is not None and value not in SAFE_ERROR_CODES:
+                    raise ValueError("unsafe error code")
+                updated[key] = value
+            updated["updated_at"] = utc_now()
+            self.repository.save(namespace, updated)
+            self._persist_platform(updated)
         return updated
 
     def history(self, namespace: str, limit: int) -> list[dict[str, Any]]:

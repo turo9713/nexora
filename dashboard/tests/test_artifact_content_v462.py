@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nexora.storage.artifact_content import parse_artifact_content
+from nexora.storage.artifact_content import parse_artifact_content, structured_table_blocks
 
 
 def test_inline_markdown_is_split_into_structured_sections_and_rows() -> None:
@@ -38,3 +38,13 @@ def test_content_parser_is_bounded_and_has_safe_fallback() -> None:
     many = parse_artifact_content("\n".join(f"- item {index}" for index in range(1000)))
     assert len(many.blocks) <= 250
     assert len(many.data_rows) <= 250
+
+
+def test_structured_table_fallback_uses_parsed_rows() -> None:
+    content = parse_artifact_content("## Сравнение\n- Runtime — готов\n- Telegram — готов")
+    rows = structured_table_blocks(content)
+
+    assert rows[0].kind == "table_header"
+    assert rows[0].cells == ("Раздел", "Тип", "Элемент", "Подробности")
+    assert len(rows) == 3
+    assert rows[1].cells[0] == "Сравнение"

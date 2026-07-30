@@ -42,6 +42,31 @@ class ArtifactContent:
     section_count: int
 
 
+def structured_table_blocks(
+    content: ArtifactContent,
+    *,
+    limit: int = 24,
+) -> list[ContentBlock]:
+    """Return a presentation table when a model omitted Markdown table syntax."""
+
+    rows = [
+        ContentBlock(
+            "table_header",
+            "Структурированные данные",
+            cells=("Раздел", "Тип", "Элемент", "Подробности"),
+        )
+    ]
+    for section, block_type, item, details in content.data_rows[: max(1, limit)]:
+        rows.append(
+            ContentBlock(
+                "table_row",
+                section,
+                cells=(section, block_type, item, details),
+            )
+        )
+    return rows
+
+
 def _clean(value: str, limit: int = MAX_BLOCK_TEXT) -> str:
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", str(value or ""))
     text = re.sub(r"\s+", " ", text).strip()

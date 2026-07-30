@@ -15,6 +15,10 @@ All notable changes follow Semantic Versioning.
 - Telegram sends every generated document with a short format-specific caption.
 - Long Telegram task descriptions retain explicit XLSX/ZIP intent in the safe
   short title, so trailing format requirements cannot be lost by truncation.
+- Spreadsheet requests receive a deterministic structured-table fallback in
+  DOCX/PDF when the model returns lists instead of valid Markdown table syntax.
+- Task state transitions are serialized so a concurrent worker cannot overwrite
+  a confirmed cancellation with a stale `IN_PROGRESS` state.
 
 ### Security
 
