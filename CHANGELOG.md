@@ -2,6 +2,29 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.7.0] - 2026-07-30
+
+### Added
+
+- Project Workspace inputs in the existing Dashboard Workbench: up to five
+  allowlisted source files can be attached to a new task.
+- Private owner/workspace/task binding for project inputs with checksum
+  verification and `0600`/`0700` storage.
+- Safe text extraction for text, Markdown, CSV, JSON and DOCX sources. Attached
+  content is explicitly treated as untrusted data in the agent prompt.
+- Versioned deliverables. Continuing a completed task can now produce v2, v3
+  and later artifacts without creating a new task.
+- Source-file inventory and deliverable versions in the task result page.
+
+### Security
+
+- Uploads require an authenticated Dashboard session, CSRF token, authorized
+  workspace and a strict extension/signature/size allowlist.
+- Input paths are generated internally; user-supplied host paths, executable
+  formats, symlinks and cross-workspace rebinding are rejected.
+- Gateway, Policy Engine, approvals and existing runtime contracts are
+  unchanged.
+
 ## [4.6.2] - 2026-07-30
 
 ### Improved

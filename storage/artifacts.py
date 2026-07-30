@@ -97,6 +97,7 @@ class ArtifactRepository:
         kind: str,
         content: bytes,
         created_at: str | None = None,
+        source_revision: str | None = None,
     ) -> dict[str, Any]:
         if kind not in ALLOWED_FORMATS:
             raise ArtifactError("artifact format is not allowed")
@@ -105,13 +106,32 @@ class ArtifactRepository:
             raise ArtifactError("artifact size is not allowed")
         extension, media_type = ALLOWED_FORMATS[kind]
         checksum = hashlib.sha256(payload).hexdigest()
+        revision = str(source_revision or checksum)
+        if not re.fullmatch(r"[a-f0-9]{64}", revision):
+            raise ArtifactError("artifact source revision is invalid")
         artifact_id = "ART-" + hashlib.sha256(
-            f"{owner}:{workspace_id}:{task_id}:{kind}:{checksum}".encode("utf-8")
+            f"{owner}:{workspace_id}:{task_id}:{kind}:{revision}".encode("utf-8")
         ).hexdigest()[:16].upper()
         task_root = self._task_root(owner, workspace_id, task_id)
-        artifact_root = ensure_private_directory(task_root / artifact_id, root=self.root)
+        artifact_root = task_root / artifact_id
+        if artifact_root.is_dir() and not artifact_root.is_symlink():
+            existing_metadata = self._load_metadata(artifact_root)
+            if (
+                existing_metadata is not None
+                and existing_metadata.get("checksum_sha256") == checksum
+                and existing_metadata.get("kind") == kind
+            ):
+                return self._public(existing_metadata)
+        prior = self.list(owner, workspace_id, task_id=task_id, limit=200)
+        versions = [
+            int(item.get("version") or 1)
+            for item in prior
+            if item.get("kind") == kind
+        ]
+        version = max(versions, default=0) + 1
+        artifact_root = ensure_private_directory(artifact_root, root=self.root)
         storage_name = f"result{extension}"
-        filename = f"{task_id}-result{extension}"
+        filename = f"{task_id}-result-v{version}{extension}"
         metadata = {
             "id": artifact_id,
             "owner": _component(owner, SCOPE_ID, "owner scope"),
@@ -123,8 +143,10 @@ class ArtifactRepository:
             "media_type": media_type,
             "size_bytes": len(payload),
             "checksum_sha256": checksum,
+            "source_revision_sha256": revision,
             "storage_name": storage_name,
             "status": "READY",
+            "version": version,
             "created_at": str(created_at or _utc_now())[:64],
         }
         secure_atomic_write_bytes(artifact_root / storage_name, payload, root=self.root)
@@ -230,8 +252,10 @@ class ArtifactRepository:
                 "media_type",
                 "size_bytes",
                 "checksum_sha256",
+                "source_revision_sha256",
                 "storage_name",
                 "status",
+                "version",
                 "created_at",
                 "owner",
             )
@@ -277,8 +301,7 @@ class ArtifactService:
             ensure_ascii=False,
             indent=2,
         ).encode("utf-8")
-        existing = self.repository.list(task["owner"], task["workspace_id"], task_id=task_id)
-        recorded_kinds = {item["kind"] for item in existing}
+        existing = self.repository.list(task["owner"], task["workspace_id"], task_id=task_id, limit=200)
         payloads: dict[str, bytes] = {"markdown": markdown, "json": json_result}
         render_task = {
             "task_id": task_id,
@@ -287,6 +310,9 @@ class ArtifactService:
             "result": result,
             "completed_at": task.get("completed_at") or task.get("updated_at"),
         }
+        source_revision = hashlib.sha256(
+            f"{title}\0{result}".encode("utf-8")
+        ).hexdigest()
         try:
             payloads.update(render_rich_artifacts(render_task, payloads))
         except DocumentRenderError as exc:
@@ -300,7 +326,18 @@ class ArtifactService:
             )
         artifacts = []
         for kind, payload in payloads.items():
-            if kind in recorded_kinds:
+            checksum = hashlib.sha256(payload).hexdigest()
+            if any(
+                item.get("kind") == kind
+                and (
+                    item.get("source_revision_sha256") == source_revision
+                    or (
+                        not item.get("source_revision_sha256")
+                        and item.get("checksum_sha256") == checksum
+                    )
+                )
+                for item in existing
+            ):
                 continue
             artifacts.append(
                 self.repository.create(
@@ -311,6 +348,7 @@ class ArtifactService:
                     kind=kind,
                     content=payload,
                     created_at=task.get("completed_at") or task.get("updated_at"),
+                    source_revision=source_revision,
                 )
             )
         for artifact in artifacts:
@@ -406,6 +444,8 @@ class ArtifactService:
             "media_type": value["media_type"],
             "size_bytes": int(value["size_bytes"]),
             "checksum_sha256": value["checksum_sha256"],
+            "source_revision_sha256": value.get("source_revision_sha256"),
             "status": value["status"],
+            "version": int(value.get("version") or 1),
             "created_at": value["created_at"],
         }

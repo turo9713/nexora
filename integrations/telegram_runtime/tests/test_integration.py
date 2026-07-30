@@ -46,7 +46,7 @@ def test_completed_task_sends_private_document_artifact(handler_factory):
     wait_for(lambda: active_task(handler)["status"] == "COMPLETED" and bool(delivered))
 
     name, media_type, payload, caption = delivered[0]
-    assert name.endswith("-result.docx")
+    assert name.endswith("-result-v1.docx")
     assert media_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     assert payload.startswith(b"PK")
     assert "полный структурированный отчёт" in caption

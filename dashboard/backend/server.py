@@ -44,11 +44,18 @@ from nexora.dashboard.runtime import DashboardTaskRuntime, build_openclaw_orches
 from nexora.operations import OperationsService
 from nexora.enterprise import EnterpriseService
 from nexora.workforce import AIWorkforceService
-from nexora.storage import ArtifactRepository, ArtifactService
+from nexora.storage import (
+    ArtifactRepository,
+    ArtifactService,
+    ProjectWorkspaceError,
+    ProjectWorkspaceRepository,
+    ProjectWorkspaceService,
+)
 
 
 COOKIE_NAME = "__Host-nexora_session"
 MAX_BODY = 64 * 1024
+MAX_UPLOAD_BODY = 8 * 1024 * 1024
 TASK_ID = re.compile(r"^[A-Za-z0-9-]{3,100}$")
 AGENT_ID = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 APPROVAL_ID = re.compile(r"^APR-[A-Z0-9]{8}$")
@@ -104,6 +111,7 @@ class DashboardApplication:
     sessions: SessionManager
     permissions: DashboardPermissions
     limiter: RequestRateLimiter
+    upload_limiter: RequestRateLimiter
 
 
 def _read_secret(path: Path, minimum: int = 1) -> bytes:
@@ -138,6 +146,10 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
     artifacts = ArtifactService(
         ArtifactRepository(config.state_root / "artifacts"),
         database,
+        audit,
+    )
+    project_workspace = ProjectWorkspaceService(
+        ProjectWorkspaceRepository(config.state_root / "project_inputs"),
         audit,
     )
     events.subscribe(artifacts.event_sink)
@@ -175,8 +187,16 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
         )
         task_runtime = DashboardTaskRuntime(orchestrator, tasks, approvals, audit, policy, config.state_root, events)
     artifacts.backfill(namespace)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise, workforce=workforce, artifacts=artifacts)
-    return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise, workforce=workforce, artifacts=artifacts, project_workspace=project_workspace)
+    return DashboardApplication(
+        config,
+        api,
+        auth,
+        sessions,
+        DashboardPermissions(),
+        RequestRateLimiter(),
+        RequestRateLimiter(limit=20, window_seconds=3600),
+    )
 
 
 def create_server(config: DashboardConfig, *, use_tls: bool = True) -> ThreadingHTTPServer:
@@ -239,6 +259,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/logout":
             self.app.auth.logout(self._cookie_value())
             self._json(200, {"status": "LOGGED_OUT"}, clear_cookie=True)
+            return
+        if path == "/api/workbench/uploads":
+            if not self.app.upload_limiter.allow(session.session_id):
+                self.app.api.audit_access(path, "RATE_LIMITED")
+                self._json(429, {"error": "RATE_LIMITED"})
+                return
+            self._upload_project_input()
             return
         body = self._json_body()
         if body is None:
@@ -684,6 +711,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "health:read"
             if path == "/api/workbench/tasks":
                 return "tasks:create"
+            if path == "/api/workbench/uploads":
+                return "tasks:create"
             if re.fullmatch(r"/api/workbench/tasks/[A-Za-z0-9-]{3,100}/messages", path):
                 return "tasks:continue"
             if re.fullmatch(r"/api/workbench/tasks/[A-Za-z0-9-]{3,100}/cancel", path):
@@ -711,6 +740,34 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             if path in {"/api/agent-center", "/api/agent-teams", "/api/agent-planning"}:
                 return "agent_ecosystem:manage"
         return None
+
+    def _upload_project_input(self) -> None:
+        parsed = urlsplit(self.path)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > MAX_UPLOAD_BODY:
+            self._json(400, {"error": "INVALID_UPLOAD"})
+            return
+        filename = query.get("filename") or self.headers.get("X-Nexora-Filename", "")
+        content_type = self.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0].strip().lower()
+        if content_type in {"application/x-www-form-urlencoded", "multipart/form-data", "application/json"}:
+            self._json(400, {"error": "INVALID_UPLOAD"})
+            return
+        try:
+            response = self.app.api.upload_project_input(
+                query,
+                filename,
+                self.rfile.read(length),
+            )
+        except DashboardAPIError as exc:
+            self.app.api.audit_access(parsed.path, exc.code)
+            self._json(exc.status, {"error": exc.code, "message": exc.message})
+            return
+        self.app.api.audit_access(parsed.path)
+        self._json(201, response)
 
     def _json_body(self) -> dict[str, Any] | None:
         try:

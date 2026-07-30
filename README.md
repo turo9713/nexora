@@ -131,6 +131,19 @@ RBAC, tenant, rate-limit, request/correlation ID, and audit controls. See
 [User Dashboard](docs/user-dashboard.md), [Realtime](docs/realtime.md),
 [Notifications](docs/notifications.md), and [Operations](docs/operations.md).
 
+## Project Workspace & Deliverables (v4.7.0)
+
+The authenticated Workbench accepts up to five source files for a task
+(`TXT`, `MD`, `CSV`, `JSON`, `PDF`, `DOCX`, `XLSX`, `PNG`, `JPG`). Inputs are
+stored privately and bound to the current owner, workspace and task. Textual
+content is passed to the existing runtime as untrusted reference data; binary
+files remain safely inventoried when deterministic extraction is unavailable.
+
+Continue a completed task from its result page to create the next deliverable
+version without creating a second task. The task card displays source files and
+versioned download links. See
+[Project Workspace](docs/project-workspace.md).
+
 ## Files and Artifacts (v4.6.2)
 
 Completed tasks produce private Markdown, JSON, DOCX and PDF result artifacts. The

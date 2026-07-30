@@ -14,7 +14,7 @@ from nexora.integrations.telegram_runtime.services.task_service import TaskServi
 from nexora.security.audit.redaction import redact_text, sanitize_metadata
 from nexora.security.policies import PolicyEngine
 from nexora.skills import SkillRegistry, SkillRegistryError
-from nexora.storage import TaskReadModel
+from nexora.storage import ProjectWorkspaceError, TaskReadModel
 from nexora.api.auth import APIKeyService
 from nexora.collaboration import TeamAccessDenied, TeamService
 from nexora.billing import BillingAccessDenied, BillingFoundation
@@ -75,6 +75,7 @@ class DashboardAPI:
         enterprise: EnterpriseService | None = None,
         workforce: AIWorkforceService | None = None,
         artifacts: Any | None = None,
+        project_workspace: Any | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -101,6 +102,7 @@ class DashboardAPI:
         self.enterprise = enterprise
         self.workforce = workforce
         self.artifacts = artifacts
+        self.project_workspace = project_workspace
         self.task_read_model = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, Any]:
@@ -316,6 +318,11 @@ class DashboardAPI:
             if self.artifacts is not None and raw.get("workspace_id")
             else []
         )
+        task["inputs"] = (
+            self.project_workspace.task_inputs(self.namespace, str(raw.get("workspace_id")), task_id)
+            if self.project_workspace is not None and raw.get("workspace_id")
+            else []
+        )
         return task
 
     def task_events(self, task_id: str) -> dict[str, Any]:
@@ -326,17 +333,60 @@ class DashboardAPI:
     def create_dashboard_task(self, value: dict[str, Any]) -> dict[str, Any]:
         runtime = self._task_runtime()
         workspace = self._dashboard_workspace_context(value)
+        input_ids = value.get("input_ids") or []
+        if not isinstance(input_ids, list) or any(not isinstance(item, str) for item in input_ids):
+            raise DashboardAPIError(400, "NX_VALIDATION_ERROR", "Некорректный список исходных файлов")
+        if len(input_ids) > 5:
+            raise DashboardAPIError(400, "NX_VALIDATION_ERROR", "Можно приложить не более пяти файлов")
+        source_context = ""
+        if input_ids:
+            if self.project_workspace is None:
+                raise DashboardAPIError(503, "NX_STORAGE_ERROR", "Хранилище исходных файлов недоступно")
+            try:
+                source_context = self.project_workspace.context(
+                    self.namespace,
+                    str(workspace["workspace_id"]),
+                    input_ids,
+                )
+            except ProjectWorkspaceError as exc:
+                raise DashboardAPIError(400, "NX_INPUT_NOT_FOUND", "Исходный файл не найден или недоступен") from exc
         try:
             task = runtime.create(
                 self.namespace,
                 value.get("message"),
                 value.get("idempotency_key"),
                 workspace,
+                source_context=source_context,
             )
         except DashboardTaskRuntimeError as exc:
             raise DashboardAPIError(exc.status, exc.code, exc.message) from exc
+        if input_ids:
+            try:
+                self.project_workspace.bind(
+                    self.namespace,
+                    str(workspace["workspace_id"]),
+                    str(task["task_id"]),
+                    input_ids,
+                )
+            except ProjectWorkspaceError as exc:
+                runtime.cancel(self.namespace, str(task["task_id"]), workspace)
+                raise DashboardAPIError(409, "NX_INPUT_BIND_FAILED", "Не удалось безопасно привязать исходные файлы") from exc
         stored = self.database.get_task_details(self.namespace, str(task["task_id"]))
         return self._safe_task(stored or {"id": task["task_id"], **task})
+
+    def upload_project_input(self, query: dict[str, str], filename: str, content: bytes) -> dict[str, Any]:
+        if self.project_workspace is None:
+            raise DashboardAPIError(503, "NX_STORAGE_ERROR", "Хранилище исходных файлов недоступно")
+        workspace = self._dashboard_workspace_context(query)
+        try:
+            return self.project_workspace.upload(
+                self.namespace,
+                str(workspace["workspace_id"]),
+                filename,
+                content,
+            )
+        except ProjectWorkspaceError as exc:
+            raise DashboardAPIError(400, "NX_INVALID_INPUT_FILE", "Файл отклонён безопасной проверкой") from exc
 
     def continue_dashboard_task(self, task_id: str, value: dict[str, Any]) -> dict[str, Any]:
         runtime = self._task_runtime()

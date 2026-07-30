@@ -45,4 +45,5 @@ textarea{font:inherit;border-radius:10px;border:1px solid var(--line);padding:10
 
 /* Private task artifacts; actions remain read-only and workspace-scoped. */
 .artifact-list{display:grid;gap:10px}.artifact-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;padding:16px 18px;background:var(--panel);border:1px solid var(--line);border-radius:14px}.artifact-row p{margin:3px 0 0}.artifact-preview{grid-column:1/-1;max-height:360px;overflow:auto;margin:0}
+.project-upload{display:grid;gap:8px;padding:12px;border:1px dashed var(--line);border-radius:12px;background:rgba(7,16,14,.42)}.project-upload input{width:100%}.project-input-list{display:flex;gap:6px;flex-wrap:wrap}.project-inputs{margin:16px 0;padding:14px;border:1px solid var(--line);border-radius:12px}.project-input-row{padding:7px 0;border-bottom:1px solid var(--line)}.project-input-row:last-child{border-bottom:0}
 @media(max-width:700px){.artifact-row{grid-template-columns:1fr}.artifact-row>.actions{justify-content:flex-start}}
