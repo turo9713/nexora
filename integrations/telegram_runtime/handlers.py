@@ -146,6 +146,9 @@ class TelegramRuntimeHandlers:
             execution_guard=self._runtime_policy_allowed,
             completion_callback=self._deliver_task_artifact,
             completion_preflight=self.artifacts.ensure_task_artifacts,
+            owner_namespace=self.namespace,
+            worker_group="telegram",
+            max_workers=2,
         )
         self._awaiting_task = False
         self._last_message_at = 0.0

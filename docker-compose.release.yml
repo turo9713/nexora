@@ -4,7 +4,7 @@ x-hardened: &hardened
   build:
     context: .
     dockerfile: Dockerfile.release
-  image: nexora:${NEXORA_VERSION:-3.0.0}
+  image: nexora:${NEXORA_VERSION:-4.8.0}
   user: "10001:10001"
   read_only: true
   init: true

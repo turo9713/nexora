@@ -25,7 +25,7 @@ OUTSIDER = "b" * 32
 
 def platform(tmp_path: Path):
     database = SQLiteRepository(tmp_path / "state" / "nexora.sqlite3")
-    assert database.migrate() == 13
+    assert database.migrate() == 14
     registry = AgentRegistry(PROJECT / "agents").load()
     policy = PolicyEngine(registry, PROJECT, status_resolver=database.agent_enabled)
     audit = AuditService(AuditRepository(tmp_path / "audit"), database=database)
@@ -119,6 +119,7 @@ def test_migration_013_backup_integrity_rollback_and_immutable_earnings(tmp_path
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute("UPDATE marketplace_earnings SET creator_cents=900 WHERE id='EARN-1'")
     assert service.developer_portal(OWNER)["payments_enabled"] is False
+    database.rollback(14)
     database.rollback(13)
     assert database.schema_version() == 12
     with sqlite3.connect(database.path) as connection:

@@ -100,6 +100,7 @@ class DashboardTaskRuntime:
         policy: Any,
         state_root: Path,
         event_bus: Any | None = None,
+        owner_namespace: str | None = None,
     ) -> None:
         self.tasks = tasks
         self.approvals = approvals
@@ -121,6 +122,9 @@ class DashboardTaskRuntime:
             execution_guard=self._policy_allowed,
             source="dashboard_runtime_v3.1",
             created_by="dashboard-owner",
+            owner_namespace=owner_namespace,
+            worker_group="dashboard",
+            max_workers=2,
         )
         self._lock = threading.Lock()
 

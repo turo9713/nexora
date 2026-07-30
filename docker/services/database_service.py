@@ -17,7 +17,7 @@ DATABASE = Path("/workspace/nexora/runtime/state/database/nexora.sqlite3")
 
 def check() -> bool:
     repository = SQLiteRepository(DATABASE)
-    if repository.schema_version() != 4:
+    if repository.schema_version() != 14:
         return False
     with sqlite3.connect(DATABASE, timeout=5) as connection:
         return connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

@@ -31,6 +31,9 @@ class CancellationService:
             return False, task
         task = self.tasks.update_fields(namespace, task_id, cancellation_requested=True, pending_approval_id=None)
         task = self.tasks.transition(namespace, task_id, "CANCELLED", event="OWNER_CANCELLED")
+        database = getattr(self.tasks, "database", None)
+        if database is not None and database.schema_version() >= 14:
+            database.cancel_execution_jobs(namespace, task_id)
         task_approvals = self.approvals.repository.list_for_task(namespace, task_id)
         self.approvals.invalidate_task(namespace, task_id)
         if self.idempotency is not None:

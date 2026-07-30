@@ -128,6 +128,11 @@ class DashboardAPI:
             "gateway": self._health_value(status.get("openclaw")),
             "web_runtime": "OK" if self.task_runtime is not None else "WARNING",
             "tasks": self.database.task_overview(self.namespace),
+            "queue": (
+                self.database.execution_queue_summary(self.namespace)
+                if self.database.schema_version() >= 14
+                else {"queued": 0, "running": 0, "succeeded": 0, "failed": 0, "cancelled": 0}
+            ),
         }
 
     def user_dashboard(self, query: dict[str, str]) -> dict[str, Any]:
@@ -295,6 +300,59 @@ class DashboardAPI:
         search = query.get("search", "").strip()[:100] or None
         rows = self.database.list_tasks(self.namespace, limit=limit, status=status, search=search)
         return {"items": self.task_read_model.list(self.namespace, rows)}
+
+    def execution_queue(self, query: dict[str, str]) -> dict[str, Any]:
+        if self.database.schema_version() < 14:
+            raise DashboardAPIError(503, "QUEUE_UNAVAILABLE", "Очередь выполнения недоступна")
+        workspace_id = self._artifact_workspace(query.get("workspace_id"))
+        selected_status = str(query.get("status") or "").upper() or None
+        allowed = {"QUEUED", "RUNNING", "RETRY_WAIT", "SUCCEEDED", "FAILED", "CANCELLED"}
+        if selected_status is not None and selected_status not in allowed:
+            raise DashboardAPIError(400, "INVALID_FILTER", "Некорректный статус очереди")
+        try:
+            limit = max(1, min(200, int(query.get("limit", "100"))))
+        except ValueError as exc:
+            raise DashboardAPIError(400, "INVALID_FILTER", "Некорректный лимит") from exc
+        rows = self.database.list_execution_jobs(
+            self.namespace,
+            workspace_id=workspace_id,
+            status=selected_status,
+            limit=limit,
+        )
+        position = 0
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            if row["status"] in {"QUEUED", "RETRY_WAIT"}:
+                position += 1
+                queue_position: int | None = position
+            else:
+                queue_position = None
+            items.append(
+                {
+                    "job_id": str(row["id"]),
+                    "task_id": str(row["task_id"]),
+                    "title": redact_text(row.get("title"), 200),
+                    "worker_group": str(row["worker_group"]),
+                    "priority": int(row["priority"]),
+                    "status": str(row["status"]),
+                    "attempt": int(row["attempt"]),
+                    "max_attempts": int(row["max_attempts"]),
+                    "queue_position": queue_position,
+                    "task_status": str(row.get("task_status") or ""),
+                    "progress": int(row.get("progress") or 0),
+                    "available_at": row.get("available_at"),
+                    "created_at": row.get("created_at"),
+                    "started_at": row.get("started_at"),
+                    "completed_at": row.get("completed_at"),
+                    "updated_at": row.get("updated_at"),
+                    "error_code": row.get("last_error_code"),
+                }
+            )
+        return {
+            "workspace_id": workspace_id,
+            "summary": self.database.execution_queue_summary(self.namespace, workspace_id=workspace_id),
+            "items": items,
+        }
 
     def task_details(self, task_id: str) -> dict[str, Any]:
         task = self.task_read_model.get(self.namespace, task_id)

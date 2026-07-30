@@ -49,6 +49,8 @@ def test_authenticated_http_api_csrf_headers_and_logout(dashboard_factory) -> No
         assert response.status == 401 and data["error"] == "UNAUTHORIZED"
         response, data = request(connection, "GET", "/api/tasks")
         assert response.status == 401 and data["error"] == "UNAUTHORIZED"
+        response, data = request(connection, "GET", "/api/queue")
+        assert response.status == 401 and data["error"] == "UNAUTHORIZED"
         response, data = request(connection, "GET", "/api/tasks/NX-HTTP-READ-001/events")
         assert response.status == 401 and data["error"] == "UNAUTHORIZED"
 
@@ -91,8 +93,29 @@ def test_authenticated_http_api_csrf_headers_and_logout(dashboard_factory) -> No
         assert response.status == 200 and data["items"][-1]["type"] == "TASK_COMPLETED"
         response, missing = request(connection, "GET", "/api/tasks/NX-NOT-AVAILABLE", cookie=cookie)
         assert response.status == 404 and missing["error"] == "TASK_NOT_FOUND"
+        workspace = app.api._dashboard_workspace_context({})
+        queued_task = app.api.tasks.create(
+            "b" * 32,
+            "Queue visibility",
+            "queue-session",
+            "NX-HTTP-QUEUE-001",
+            workspace_context=workspace,
+        )
+        app.api.database.enqueue_execution_job(
+            owner="b" * 32,
+            task_id=queued_task["task_id"],
+            session_id="queue-session",
+            worker_group="dashboard",
+            idempotency_key="http-queue-test",
+            priority=7,
+        )
+        response, queue = request(connection, "GET", f"/api/queue?workspace_id={workspace['workspace_id']}", cookie=cookie)
+        assert response.status == 200 and queue["summary"]["queued"] == 1
+        assert queue["items"][0]["task_id"] == queued_task["task_id"]
+        assert "session_id" not in queue["items"][0] and "idempotency_key" not in queue["items"][0]
         task_audit = json.dumps(app.api.database.list_audit(event="API_ACCESS"))
         assert "/api/tasks/NX-HTTP-READ-001/events" in task_audit
+        assert "/api/queue" in task_audit
         assert cookie not in task_audit and "Authorization" not in task_audit
 
         response, data = request(connection, "GET", "/api/platform/metrics", cookie=cookie)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 from uuid import uuid4
@@ -42,6 +43,11 @@ class ExecutionService:
         completion_preflight: CompletionPreflight | None = None,
         source: str = "telegram_runtime_v1.4",
         created_by: str = "telegram-owner",
+        owner_namespace: str | None = None,
+        worker_group: str = "runtime",
+        max_workers: int = 2,
+        max_attempts: int = 2,
+        lease_seconds: int = 300,
     ) -> None:
         self.orchestrator = orchestrator
         self.tasks = tasks
@@ -57,10 +63,24 @@ class ExecutionService:
         self.completion_preflight = completion_preflight
         self.source = source
         self.created_by = created_by
+        self.owner_namespace = owner_namespace
+        self.worker_group = worker_group
+        self.max_workers = max(1, min(8, int(max_workers)))
+        self.max_attempts = max(1, min(5, int(max_attempts)))
+        self.lease_seconds = max(30, int(lease_seconds))
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nexora-task")
         self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._workers: list[threading.Thread] = []
+        self._queue_enabled = bool(
+            getattr(self.tasks, "database", None) is not None
+            and self.tasks.database.schema_version() >= 14
+        )
+        if self._queue_enabled and self.owner_namespace:
+            self._start_workers(self.owner_namespace)
 
-    def submit(self, namespace: str, task_id: str, session_id: str) -> bool:
+    def submit(self, namespace: str, task_id: str, session_id: str, *, priority: int = 5) -> bool:
         task = self.tasks.get(namespace, task_id)
         if task is None:
             return False
@@ -70,17 +90,169 @@ class ExecutionService:
             return False
         task = self.tasks.update_fields(namespace, task_id, turn_number=turn_number)
         self.tasks.transition(namespace, task_id, "QUEUED", event="WORKFLOW_QUEUED")
-        self._executor.submit(self._run, namespace, task_id, session_id, turn_number, key)
+        if self._queue_enabled:
+            try:
+                self._start_workers(namespace)
+                job = self.tasks.database.enqueue_execution_job(
+                    owner=namespace,
+                    task_id=task_id,
+                    session_id=session_id,
+                    worker_group=self.worker_group,
+                    idempotency_key=key,
+                    priority=priority,
+                    max_attempts=self.max_attempts,
+                )
+            except Exception as exc:
+                self.tasks.update_fields(namespace, task_id, error_code="NX_INTERNAL_ERROR")
+                self.tasks.transition(namespace, task_id, "FAILED", event="WORKFLOW_QUEUE_FAILED")
+                self.idempotency.set_status(namespace, key, "FAILED")
+                self.audit.record(
+                    "WORKFLOW_QUEUE_FAILED",
+                    task_id=task_id,
+                    error_type=type(exc).__name__,
+                    error=redact_text(exc),
+                )
+                raise RuntimeError("execution queue unavailable") from exc
+            self.audit.record(
+                "WORKFLOW_JOB_QUEUED",
+                task_id=task_id,
+                job_id=job["id"],
+                worker_group=self.worker_group,
+                priority=int(job["priority"]),
+            )
+            self._wake.set()
+        else:
+            self._executor.submit(self._run, namespace, task_id, session_id, turn_number, key)
         return True
 
-    def _run(self, namespace: str, task_id: str, session_id: str, turn_number: int, key: str) -> None:
+    def _start_workers(self, namespace: str) -> None:
+        with self._lock:
+            if self._workers:
+                if self.owner_namespace != namespace:
+                    raise RuntimeError("execution queue owner mismatch")
+                return
+            self.owner_namespace = namespace
+            failed = self.tasks.database.recover_execution_jobs(self.worker_group, namespace)
+            for job in failed:
+                self._fail_recovered_job(namespace, job)
+            for index in range(self.max_workers):
+                worker = threading.Thread(
+                    target=self._worker_loop,
+                    args=(
+                        namespace,
+                        f"{self.worker_group}-{index + 1}-{uuid4().hex[:8]}",
+                        index == 0,
+                    ),
+                    name=f"nexora-{self.worker_group}-{index + 1}",
+                    daemon=True,
+                )
+                self._workers.append(worker)
+                worker.start()
+
+    def _fail_recovered_job(self, namespace: str, job: dict[str, Any]) -> None:
+        task_id = str(job["task_id"])
+        key = str(job["idempotency_key"])
+        try:
+            if not self.cancellations.is_cancelled(namespace, task_id):
+                self.tasks.update_fields(namespace, task_id, error_code="NX_TIMEOUT")
+                self.tasks.transition(namespace, task_id, "FAILED", event="WORKFLOW_RECOVERY_FAILED")
+            self.idempotency.set_status(namespace, key, "FAILED")
+            self.audit.record("WORKFLOW_RECOVERY_FAILED", task_id=task_id, code="NX_TIMEOUT")
+        except (KeyError, OSError, RuntimeError) as exc:
+            self.audit.record(
+                "WORKFLOW_RECOVERY_STATE_FAILED",
+                task_id=task_id,
+                error_type=type(exc).__name__,
+                error=redact_text(exc),
+            )
+
+    def _worker_loop(self, namespace: str, worker_id: str, recovery_leader: bool) -> None:
+        next_recovery = time.monotonic() + 5
+        while not self._stop.is_set():
+            try:
+                if recovery_leader and time.monotonic() >= next_recovery:
+                    failed = self.tasks.database.recover_execution_jobs(self.worker_group, namespace)
+                    for item in failed:
+                        self._fail_recovered_job(namespace, item)
+                    next_recovery = time.monotonic() + 5
+                job = self.tasks.database.claim_execution_job(
+                    worker_group=self.worker_group,
+                    owner=namespace,
+                    worker_id=worker_id,
+                    lease_seconds=self.lease_seconds,
+                )
+                if job is None:
+                    self._wake.wait(0.5)
+                    self._wake.clear()
+                    continue
+                self._run(
+                    namespace,
+                    str(job["task_id"]),
+                    str(job["session_id"]),
+                    self._turn_number(str(job["idempotency_key"])),
+                    str(job["idempotency_key"]),
+                    job=job,
+                    worker_id=worker_id,
+                )
+            except Exception as exc:
+                self.audit.record(
+                    "WORKER_LOOP_ERROR",
+                    worker_group=self.worker_group,
+                    error_type=type(exc).__name__,
+                    error=redact_text(exc),
+                )
+                self._stop.wait(0.5)
+
+    @staticmethod
+    def _turn_number(key: str) -> int:
+        try:
+            return int(key.rsplit(":", 1)[-1])
+        except (TypeError, ValueError):
+            return 1
+
+    def _run(
+        self,
+        namespace: str,
+        task_id: str,
+        session_id: str,
+        turn_number: int,
+        key: str,
+        *,
+        job: dict[str, Any] | None = None,
+        worker_id: str | None = None,
+    ) -> None:
+        heartbeat_stop: threading.Event | None = None
+        heartbeat: threading.Thread | None = None
+        if job is not None and worker_id is not None:
+            heartbeat_stop = threading.Event()
+            heartbeat = threading.Thread(
+                target=self._heartbeat_loop,
+                args=(str(job["id"]), worker_id, heartbeat_stop),
+                name=f"nexora-lease-{str(job['id'])[-8:]}",
+                daemon=True,
+            )
+            heartbeat.start()
         try:
             if self.cancellations.is_cancelled(namespace, task_id):
                 self.idempotency.set_status(namespace, key, "CANCELLED")
+                self._finish_job(job, worker_id, "CANCELLED")
                 return
-            self.tasks.transition(namespace, task_id, "PLANNING", event="WORKER_STARTED")
+            attempt = int(job.get("attempt", 1)) if job else 1
+            if attempt > 1:
+                current = self.tasks.get(namespace, task_id) or {}
+                self.tasks.transition(
+                    namespace,
+                    task_id,
+                    "IN_PROGRESS",
+                    stage=f"Повтор безопасного запроса ({attempt}/{int(job['max_attempts'])})",
+                    progress=int(current.get("progress", 40)),
+                    event="WORKER_RETRY_STARTED",
+                )
+            else:
+                self.tasks.transition(namespace, task_id, "PLANNING", event="WORKER_STARTED")
             if self.cancellations.is_cancelled(namespace, task_id):
                 self.idempotency.set_status(namespace, key, "CANCELLED")
+                self._finish_job(job, worker_id, "CANCELLED")
                 return
             self.tasks.transition(namespace, task_id, "IN_PROGRESS", event="PROVIDER_REQUEST")
 
@@ -126,6 +298,7 @@ class ExecutionService:
             if self.cancellations.is_cancelled(namespace, task_id):
                 self.idempotency.set_status(namespace, key, "CANCELLED")
                 self.audit.record("WORKFLOW_RESULT_DISCARDED_AFTER_CANCEL", task_id=task_id)
+                self._finish_job(job, worker_id, "CANCELLED")
                 return
 
             result = outcome.get("result") if isinstance(outcome.get("result"), dict) else {}
@@ -163,14 +336,39 @@ class ExecutionService:
                         error=redact_text(exc),
                     )
             self.idempotency.set_status(namespace, key, "SUCCEEDED")
+            self._finish_job(job, worker_id, "SUCCEEDED")
             self.audit.record("WORKFLOW_COMPLETED", task_id=task_id, status=task["status"])
         except Exception as exc:
             code = safe_error_code(exc)
+            if self._retryable(job, code):
+                current = self.tasks.get(namespace, task_id) or {}
+                self.tasks.update_fields(namespace, task_id, error_code=code)
+                self.tasks.transition(
+                    namespace,
+                    task_id,
+                    "IN_PROGRESS",
+                    stage="Временная ошибка — безопасный повтор запланирован",
+                    progress=int(current.get("progress", 40)),
+                    event="WORKFLOW_RETRY_SCHEDULED",
+                )
+                delay = min(30, 2 ** int(job["attempt"]))
+                self._finish_job(job, worker_id, "RETRY_WAIT", error_code=code, retry_delay_seconds=delay)
+                self.audit.record(
+                    "WORKFLOW_RETRY_SCHEDULED",
+                    task_id=task_id,
+                    attempt=int(job["attempt"]),
+                    max_attempts=int(job["max_attempts"]),
+                    delay_seconds=delay,
+                    code=code,
+                )
+                self._wake.set()
+                return
             try:
                 if not self.cancellations.is_cancelled(namespace, task_id):
                     self.tasks.update_fields(namespace, task_id, error_code=code)
                     self.tasks.transition(namespace, task_id, "FAILED", event="WORKFLOW_FAILED")
                 self.idempotency.set_status(namespace, key, "FAILED")
+                self._finish_job(job, worker_id, "FAILED", error_code=code)
             finally:
                 self.audit.record(
                     "WORKFLOW_FAILED",
@@ -180,6 +378,58 @@ class ExecutionService:
                     code=code,
                 )
             self._notify(format_safe_error(code, task_id), None)
+        finally:
+            if heartbeat_stop is not None:
+                heartbeat_stop.set()
+            if heartbeat is not None:
+                heartbeat.join(timeout=1)
+
+    def _heartbeat_loop(self, job_id: str, worker_id: str, stop: threading.Event) -> None:
+        interval = max(10, self.lease_seconds // 3)
+        while not stop.wait(interval):
+            try:
+                if not self.tasks.database.renew_execution_job_lease(
+                    job_id,
+                    worker_id,
+                    lease_seconds=self.lease_seconds,
+                ):
+                    return
+            except Exception as exc:
+                self.audit.record(
+                    "WORKER_LEASE_RENEWAL_FAILED",
+                    worker_group=self.worker_group,
+                    error_type=type(exc).__name__,
+                    error=redact_text(exc),
+                )
+                return
+
+    @staticmethod
+    def _retryable(job: dict[str, Any] | None, code: str) -> bool:
+        return bool(
+            job
+            and code in {"NX_TIMEOUT", "NX_PROVIDER_ERROR"}
+            and int(job.get("attempt", 0)) < int(job.get("max_attempts", 1))
+        )
+
+    def _finish_job(
+        self,
+        job: dict[str, Any] | None,
+        worker_id: str | None,
+        status: str,
+        *,
+        error_code: str | None = None,
+        retry_delay_seconds: int = 0,
+    ) -> None:
+        if job is None or worker_id is None:
+            return
+        if not self.tasks.database.finish_execution_job(
+            str(job["id"]),
+            worker_id,
+            status,
+            error_code=error_code,
+            retry_delay_seconds=retry_delay_seconds,
+        ):
+            raise RuntimeError("execution job lease lost")
 
     def _notify(self, text: str, markup: dict[str, Any] | None) -> None:
         try:
@@ -192,4 +442,8 @@ class ExecutionService:
             )
 
     def shutdown(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        for worker in self._workers:
+            worker.join(timeout=2)
         self._executor.shutdown(wait=False, cancel_futures=True)

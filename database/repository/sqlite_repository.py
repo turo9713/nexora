@@ -4,9 +4,10 @@ import json
 import hashlib
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from nexora.database.models import HealthSummary
 
@@ -61,6 +62,7 @@ class SQLiteRepository:
             (11, self.migrations_root / "011_operations.sql"),
             (12, self.migrations_root / "012_enterprise.sql"),
             (13, self.migrations_root / "013_ai_workforce.sql"),
+            (14, self.migrations_root / "014_execution_queue.sql"),
         )
         with self._connect() as connection:
             for version, path in scripts:
@@ -70,8 +72,8 @@ class SQLiteRepository:
                     applied = None
                 if applied is not None:
                     continue
-                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10, 11, 12, 13} else None
-                if version in {6, 7, 8, 9, 10, 11, 12, 13} and current_version == version - 1:
+                current_version = connection.execute("SELECT COALESCE(MAX(version),0) FROM schema_migrations").fetchone()[0] if version in {6, 7, 8, 9, 10, 11, 12, 13, 14} else None
+                if version in {6, 7, 8, 9, 10, 11, 12, 13, 14} and current_version == version - 1:
                     connection.commit()
                     self._backup_before_version(connection, version)
                 connection.executescript(path.read_text(encoding="utf-8"))
@@ -79,7 +81,7 @@ class SQLiteRepository:
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?, ?)",
                     (version, utc_now()),
                 )
-                if version in {6, 7, 8, 9, 10, 11, 12, 13} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                if version in {6, 7, 8, 9, 10, 11, 12, 13, 14} and connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise RuntimeError(f"migration {version:03d} integrity check failed")
         self._secure_database()
         return self.schema_version()
@@ -108,13 +110,13 @@ class SQLiteRepository:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def rollback(self, version: int = 13) -> None:
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}:
+    def rollback(self, version: int = 14) -> None:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}:
             raise ValueError("unsupported migration rollback")
         current = self.schema_version()
         if current > version:
             raise RuntimeError(f"rollback migration {current} first")
-        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem", 11: "operations", 12: "enterprise", 13: "ai_workforce"}
+        names = {1: "platform", 2: "dashboard", 3: "skills", 4: "public_api", 5: "community", 6: "teams", 7: "cloud_billing", 8: "marketplace", 9: "creator_economy", 10: "agent_ecosystem", 11: "operations", 12: "enterprise", 13: "ai_workforce", 14: "execution_queue"}
         script = (self.migrations_root / f"{version:03d}_{names[version]}.down.sql").read_text(encoding="utf-8")
         with self._connect() as connection:
             connection.executescript(script)
@@ -127,6 +129,277 @@ class SQLiteRepository:
         except sqlite3.OperationalError:
             return 0
         return int(row["version"]) if row is not None else 0
+
+    @staticmethod
+    def _execution_event(
+        connection: sqlite3.Connection,
+        job_id: str,
+        event_type: str,
+        status: str,
+        attempt: int,
+        created_at: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO execution_job_events(job_id,event_type,status,attempt,created_at) "
+            "VALUES(?,?,?,?,?)",
+            (job_id, event_type, status, int(attempt), created_at),
+        )
+
+    def enqueue_execution_job(
+        self,
+        *,
+        owner: str,
+        task_id: str,
+        session_id: str,
+        worker_group: str,
+        idempotency_key: str,
+        priority: int = 5,
+        max_attempts: int = 2,
+    ) -> dict[str, Any]:
+        priority = max(0, min(9, int(priority)))
+        max_attempts = max(1, min(5, int(max_attempts)))
+        now = utc_now()
+        job_id = f"JOB-{uuid4().hex[:16].upper()}"
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO execution_jobs("
+                "id,task_id,owner,session_id,worker_group,idempotency_key,priority,status,"
+                "attempt,max_attempts,available_at,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?,'QUEUED',0,?,?,?,?)",
+                (
+                    job_id,
+                    task_id,
+                    owner,
+                    session_id,
+                    worker_group,
+                    idempotency_key,
+                    priority,
+                    max_attempts,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM execution_jobs WHERE worker_group=? AND idempotency_key=?",
+                (worker_group, idempotency_key),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("execution job unavailable")
+            if row["id"] == job_id:
+                self._execution_event(connection, job_id, "JOB_QUEUED", "QUEUED", 0, now)
+        self._secure_database()
+        return dict(row)
+
+    def recover_execution_jobs(self, worker_group: str, owner: str) -> list[dict[str, Any]]:
+        now = utc_now()
+        failed: list[dict[str, Any]] = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            expired = connection.execute(
+                "SELECT * FROM execution_jobs WHERE worker_group=? AND owner=? "
+                "AND status='RUNNING' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?",
+                (worker_group, owner, now),
+            ).fetchall()
+            for row in expired:
+                status = "QUEUED" if int(row["attempt"]) < int(row["max_attempts"]) else "FAILED"
+                connection.execute(
+                    "UPDATE execution_jobs SET status=?,available_at=?,lease_owner=NULL,"
+                    "lease_expires_at=NULL,updated_at=?,completed_at=CASE WHEN ?='FAILED' THEN ? ELSE NULL END,"
+                    "last_error_code=CASE WHEN ?='FAILED' THEN 'NX_TIMEOUT' ELSE last_error_code END WHERE id=?",
+                    (status, now, now, status, now, status, row["id"]),
+                )
+                self._execution_event(
+                    connection,
+                    str(row["id"]),
+                    "JOB_LEASE_RECOVERED" if status == "QUEUED" else "JOB_RECOVERY_FAILED",
+                    status,
+                    int(row["attempt"]),
+                    now,
+                )
+                if status == "FAILED":
+                    failed.append(dict(row))
+        self._secure_database()
+        return failed
+
+    def claim_execution_job(
+        self,
+        *,
+        worker_group: str,
+        owner: str,
+        worker_id: str,
+        lease_seconds: int = 300,
+    ) -> dict[str, Any] | None:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        lease_expires = (now_dt + timedelta(seconds=max(30, int(lease_seconds)))).isoformat()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM execution_jobs WHERE worker_group=? AND owner=? "
+                "AND status IN ('QUEUED','RETRY_WAIT') AND available_at<=? "
+                "AND attempt<max_attempts ORDER BY priority DESC,created_at,id LIMIT 1",
+                (worker_group, owner, now),
+            ).fetchone()
+            if row is None:
+                return None
+            attempt = int(row["attempt"]) + 1
+            changed = connection.execute(
+                "UPDATE execution_jobs SET status='RUNNING',attempt=?,lease_owner=?,"
+                "lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=? "
+                "WHERE id=? AND status IN ('QUEUED','RETRY_WAIT')",
+                (attempt, worker_id, lease_expires, now, now, row["id"]),
+            ).rowcount
+            if changed != 1:
+                return None
+            self._execution_event(connection, str(row["id"]), "JOB_CLAIMED", "RUNNING", attempt, now)
+            claimed = connection.execute("SELECT * FROM execution_jobs WHERE id=?", (row["id"],)).fetchone()
+        self._secure_database()
+        return dict(claimed) if claimed is not None else None
+
+    def finish_execution_job(
+        self,
+        job_id: str,
+        worker_id: str,
+        status: str,
+        *,
+        error_code: str | None = None,
+        retry_delay_seconds: int = 0,
+    ) -> bool:
+        if status not in {"SUCCEEDED", "FAILED", "CANCELLED", "RETRY_WAIT"}:
+            raise ValueError("invalid execution job status")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        available_at = (now_dt + timedelta(seconds=max(0, retry_delay_seconds))).isoformat()
+        terminal = status in {"SUCCEEDED", "FAILED", "CANCELLED"}
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT attempt FROM execution_jobs WHERE id=? AND status='RUNNING' AND lease_owner=?",
+                (job_id, worker_id),
+            ).fetchone()
+            if row is None:
+                return False
+            changed = connection.execute(
+                "UPDATE execution_jobs SET status=?,available_at=?,lease_owner=NULL,lease_expires_at=NULL,"
+                "updated_at=?,completed_at=?,last_error_code=? WHERE id=? AND status='RUNNING' AND lease_owner=?",
+                (
+                    status,
+                    available_at,
+                    now,
+                    now if terminal else None,
+                    error_code,
+                    job_id,
+                    worker_id,
+                ),
+            ).rowcount
+            if changed == 1:
+                self._execution_event(
+                    connection,
+                    job_id,
+                    "JOB_RETRY_SCHEDULED" if status == "RETRY_WAIT" else f"JOB_{status}",
+                    status,
+                    int(row["attempt"]),
+                    now,
+                )
+        self._secure_database()
+        return changed == 1
+
+    def renew_execution_job_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        lease_seconds: int = 300,
+    ) -> bool:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        lease_expires = (now_dt + timedelta(seconds=max(30, int(lease_seconds)))).isoformat()
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE execution_jobs SET lease_expires_at=?,updated_at=? "
+                "WHERE id=? AND status='RUNNING' AND lease_owner=?",
+                (lease_expires, now, job_id, worker_id),
+            ).rowcount
+        self._secure_database()
+        return changed == 1
+
+    def cancel_execution_jobs(self, owner: str, task_id: str) -> int:
+        now = utc_now()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id,attempt FROM execution_jobs WHERE owner=? AND task_id=? "
+                "AND status IN ('QUEUED','RETRY_WAIT')",
+                (owner, task_id),
+            ).fetchall()
+            for row in rows:
+                connection.execute(
+                    "UPDATE execution_jobs SET status='CANCELLED',completed_at=?,updated_at=? WHERE id=?",
+                    (now, now, row["id"]),
+                )
+                self._execution_event(
+                    connection,
+                    str(row["id"]),
+                    "JOB_CANCELLED",
+                    "CANCELLED",
+                    int(row["attempt"]),
+                    now,
+                )
+        self._secure_database()
+        return len(rows)
+
+    def list_execution_jobs(
+        self,
+        owner: str,
+        *,
+        workspace_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = ["j.owner=?"]
+        values: list[Any] = [owner]
+        if workspace_id:
+            clauses.append("t.workspace_id=?")
+            values.append(workspace_id)
+        if status:
+            clauses.append("j.status=?")
+            values.append(status)
+        values.append(max(1, min(200, int(limit))))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT j.id,j.task_id,j.worker_group,j.priority,j.status,j.attempt,j.max_attempts,"
+                "j.available_at,j.created_at,j.started_at,j.completed_at,j.updated_at,j.last_error_code,"
+                "t.title,t.workspace_id,t.status AS task_status,t.progress "
+                "FROM execution_jobs j JOIN tasks t ON t.id=j.task_id "
+                f"WHERE {' AND '.join(clauses)} ORDER BY "
+                "CASE WHEN j.status IN ('RUNNING','QUEUED','RETRY_WAIT') THEN 0 ELSE 1 END,"
+                "j.priority DESC,"
+                "CASE WHEN j.status IN ('RUNNING','QUEUED','RETRY_WAIT') THEN j.created_at END ASC,"
+                "j.created_at DESC LIMIT ?",
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def execution_queue_summary(self, owner: str, *, workspace_id: str | None = None) -> dict[str, int]:
+        clauses = ["j.owner=?"]
+        values: list[Any] = [owner]
+        if workspace_id:
+            clauses.append("t.workspace_id=?")
+            values.append(workspace_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT j.status,COUNT(*) AS total FROM execution_jobs j "
+                "JOIN tasks t ON t.id=j.task_id "
+                f"WHERE {' AND '.join(clauses)} GROUP BY j.status",
+                values,
+            ).fetchall()
+        counts = {str(row["status"]): int(row["total"]) for row in rows}
+        return {
+            "queued": counts.get("QUEUED", 0) + counts.get("RETRY_WAIT", 0),
+            "running": counts.get("RUNNING", 0),
+            "succeeded": counts.get("SUCCEEDED", 0),
+            "failed": counts.get("FAILED", 0),
+            "cancelled": counts.get("CANCELLED", 0),
+        }
 
     def ensure_user(self, external_hash: str) -> int:
         with self._connect() as connection:
@@ -320,7 +593,7 @@ class SQLiteRepository:
         try:
             with self._connect() as connection:
                 row = connection.execute("PRAGMA quick_check").fetchone()
-            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 13
+            return row is not None and str(row[0]).lower() == "ok" and self.schema_version() == 14
         except sqlite3.Error:
             return False
 

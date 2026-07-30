@@ -52,7 +52,7 @@ def event(event_id: str, task_id: str, event_type: str, metadata: dict[str, Any]
 
 def repository(tmp_path: Path) -> SQLiteRepository:
     value = SQLiteRepository(tmp_path / "state" / "nexora.sqlite3")
-    assert value.migrate() == 13
+    assert value.migrate() == 14
     return value
 
 

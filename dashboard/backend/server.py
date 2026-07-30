@@ -185,7 +185,16 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
             config.gateway_endpoint,
             config.gateway_timeout_seconds,
         )
-        task_runtime = DashboardTaskRuntime(orchestrator, tasks, approvals, audit, policy, config.state_root, events)
+        task_runtime = DashboardTaskRuntime(
+            orchestrator,
+            tasks,
+            approvals,
+            audit,
+            policy,
+            config.state_root,
+            events,
+            owner_namespace=namespace,
+        )
     artifacts.backfill(namespace)
     api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise, workforce=workforce, artifacts=artifacts, project_workspace=project_workspace)
     return DashboardApplication(
@@ -477,6 +486,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.enterprise_compliance(query)
             elif path == "/api/tasks":
                 response = self.app.api.list_tasks(query)
+            elif path == "/api/queue":
+                response = self.app.api.execution_queue(query)
             elif path == "/api/agents":
                 response = self.app.api.list_agents()
             elif path == "/api/skills":
@@ -646,7 +657,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if method == "GET":
             if path in {"/api/session", "/api/health"}:
                 return "health:read"
-            if path in {"/api/dashboard", "/api/activity", "/api/workspace-overview", "/api/operations/analytics", "/api/realtime/tasks"}:
+            if path in {"/api/dashboard", "/api/activity", "/api/workspace-overview", "/api/operations/analytics", "/api/realtime/tasks", "/api/queue"}:
                 return "operations:read"
             if path.startswith("/api/enterprise/"):
                 return "enterprise:read"
@@ -804,7 +815,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/home", "/workbench", "/artifacts", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/ai-team", "/developer", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations", "/security-center", "/policies", "/sla", "/storage-health", "/enterprise")):
+        elif path == "/" or path.startswith(("/home", "/workbench", "/artifacts", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/queue", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/ai-team", "/developer", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations", "/security-center", "/policies", "/sla", "/storage-health", "/enterprise")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})

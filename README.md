@@ -144,6 +144,18 @@ version without creating a second task. The task card displays source files and
 versioned download links. See
 [Project Workspace](docs/project-workspace.md).
 
+## Queue & Workers (v4.8.0)
+
+Dashboard and Telegram tasks use the existing runtime through a durable SQLite
+queue. Transactional claims prevent double execution, priorities are bounded,
+and only transient provider failures receive a maximum of one automatic retry
+by default. Restart recovery uses expiring leases; cancellation invalidates
+pending queue entries.
+
+The authenticated read-only `/queue` page shows safe job state, position,
+priority, attempts and progress for the selected workspace. It cannot start,
+retry, cancel or mutate work. See [Queue & Workers](docs/queue-workers.md).
+
 ## Files and Artifacts (v4.6.2)
 
 Completed tasks produce private Markdown, JSON, DOCX and PDF result artifacts. The

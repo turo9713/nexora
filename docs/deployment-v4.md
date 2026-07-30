@@ -15,3 +15,17 @@ Rollback removes only v4 installation metadata and the Starter/Business plan
 seeds through `013_ai_workforce.down.sql`. It does not delete legacy
 Marketplace packages, tasks, workspace content, or secret material. Always
 retain the pre-deploy backup even after a successful integrity check.
+
+## v4.8 queue patch
+
+Nexora 4.8 adds reversible migration 014. Deploy it only after a verified
+SQLite backup, state archive, Git bundle, checksum and full test run. Restart
+only the Python services loading the changed runtime (`nexora-dashboard`,
+`nexora-api` when its image is shared, and `nexora-telegram`). Do not restart
+OpenClaw Gateway and do not reboot the VPS.
+
+After deployment, verify schema 14, database integrity, `/api/queue`, one
+Dashboard task and one Telegram task. Confirm each job reaches one terminal
+state and the workflow result is not duplicated. Rollback requires no active
+`QUEUED`, `RUNNING` or `RETRY_WAIT` jobs and uses
+`scripts/rollback-nexora-v4.8.sh`.

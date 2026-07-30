@@ -2,6 +2,29 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.8.0] - 2026-07-31
+
+### Added
+
+- Durable SQLite execution queue shared by the existing Dashboard and Telegram
+  runtime adapters.
+- Bounded worker pools, priorities, attempt tracking, expiring leases and
+  startup recovery without introducing a second task runtime.
+- Safe retries for transient provider timeouts/errors only. Validation,
+  permission and cancellation failures are never retried automatically.
+- Read-only authenticated `/queue` Dashboard page and `/api/queue` endpoint
+  with workspace isolation and audit logging.
+- Reversible migration 014 and a fail-closed rollback utility.
+
+### Security
+
+- Queue ownership and task visibility remain owner/workspace scoped.
+- Job claims are transactional and idempotency keys prevent duplicate workflow
+  execution.
+- Queue views never expose session identifiers, idempotency keys, leases,
+  prompts, context or secrets.
+- Cancellation invalidates queued and delayed retry jobs immediately.
+
 ## [4.7.0] - 2026-07-30
 
 ### Added
