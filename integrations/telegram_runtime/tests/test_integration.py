@@ -33,6 +33,26 @@ def test_unknown_user_gets_access_denied_and_cannot_change_context(handler_facto
     assert fake.calls == []
 
 
+def test_completed_task_sends_private_markdown_artifact(handler_factory):
+    delivered = []
+    handler = handler_factory(
+        FakeOrchestrator(["Безопасный итог"]),
+        artifact_notifier=lambda name, media_type, payload: delivered.append(
+            (name, media_type, payload)
+        ),
+    )
+    handler.handle_update(owner_message(1, "/newtask Artifact result"))
+    wait_for(lambda: active_task(handler)["status"] == "COMPLETED" and bool(delivered))
+
+    name, media_type, payload = delivered[0]
+    assert name.endswith("-result.md")
+    assert media_type.startswith("text/markdown")
+    assert "Безопасный итог" in payload.decode("utf-8")
+    workspace_id = active_task(handler)["workspace_id"]
+    files = list((handler.artifacts.repository.root / handler.namespace / workspace_id).rglob("*"))
+    assert files
+
+
 def test_unknown_user_cannot_read_history(handler_factory):
     handler = handler_factory(FakeOrchestrator())
     response = handler.handle_update(owner_message(1, "/history", owner_id=999))

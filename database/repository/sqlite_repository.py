@@ -404,6 +404,16 @@ class SQLiteRepository:
             ).fetchone()
         return None if row is None else dict(row)
 
+    def get_task_artifact_source(self, task_id: str) -> dict[str, Any] | None:
+        """Return the bounded task fields required by the internal artifact sink."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id,owner,title,status,result_summary,workspace_id,updated_at,completed_at "
+                "FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def list_task_events(self, owner: str, task_id: str) -> list[dict[str, Any]]:
         """Return task events only after an owner-scoped task match.
 

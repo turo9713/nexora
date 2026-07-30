@@ -12,6 +12,7 @@ from nexora.database import SQLiteRepository
 from nexora.runtime.events import EventBus, SQLiteEventSink
 from nexora.security.policies import PolicyEngine
 from nexora.collaboration import TeamAccessDenied, TeamService
+from nexora.storage import ArtifactRepository, ArtifactService
 
 from .commands.approvals import approval_decision_message, approval_keyboard
 from .commands.cancel import cancel_response
@@ -86,6 +87,7 @@ class TelegramRuntimeHandlers:
         namespace_key: bytes,
         orchestrator: Orchestrator | None = None,
         notifier: Notifier | None = None,
+        artifact_notifier: Callable[[str, str, bytes], None] | None = None,
         state_path: Path = STATE_PATH,
         context_path: Path = CONTEXT_PATH,
     ) -> None:
@@ -113,6 +115,12 @@ class TelegramRuntimeHandlers:
         self.actions = ActionRepository(state_path / "actions")
         self.idempotency = IdempotencyService(self.actions)
         self.audit = AuditService(AuditRepository(state_path / "audit"), database=self.database)
+        self.artifacts = ArtifactService(
+            ArtifactRepository(state_path / "artifacts"),
+            self.database,
+            self.audit,
+        )
+        self.events.subscribe(self.artifacts.event_sink)
         self.teams = TeamService(self.database, self.policy, self.audit)
         if not self.teams.list_organizations(self.namespace):
             self.teams.bootstrap_personal(self.namespace)
@@ -124,6 +132,7 @@ class TelegramRuntimeHandlers:
             self.idempotency,
         )
         self._notifier = notifier or (lambda text, markup=None: None)
+        self._artifact_notifier = artifact_notifier
         self.execution = ExecutionService(
             self.orchestrator,
             self.tasks,
@@ -135,9 +144,39 @@ class TelegramRuntimeHandlers:
             self._notifier,
             event_bus=self.events,
             execution_guard=self._runtime_policy_allowed,
+            completion_callback=self._deliver_task_artifact,
         )
         self._awaiting_task = False
         self._last_message_at = 0.0
+
+    def _deliver_task_artifact(self, namespace: str, task_id: str) -> None:
+        if self._artifact_notifier is None:
+            return
+        task = self.tasks.get(namespace, task_id)
+        if task is None or not task.get("workspace_id"):
+            return
+        artifacts = self.artifacts.list(
+            namespace,
+            str(task["workspace_id"]),
+            task_id=task_id,
+            limit=10,
+        )
+        markdown = next((item for item in artifacts if item.get("kind") == "markdown"), None)
+        if markdown is None:
+            return
+        metadata, payload = self.artifacts.download(namespace, str(markdown["id"]))
+        self._artifact_notifier(
+            str(metadata["name"]),
+            str(metadata["media_type"]),
+            payload,
+        )
+        self.audit.record(
+            "ARTIFACT_SENT_TO_OWNER",
+            task_id=task_id,
+            artifact_id=metadata["id"],
+            workspace_id=task["workspace_id"],
+            action_result="SENT",
+        )
 
     def handle_update(self, update: dict[str, Any]) -> HandlerResponse | None:
         owner_event = self.access.is_owner_message(update) or self.access.is_owner_callback(update)

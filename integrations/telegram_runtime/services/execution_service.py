@@ -15,6 +15,7 @@ from .task_service import TaskService
 
 
 Notifier = Callable[[str, dict[str, Any] | None], None]
+CompletionCallback = Callable[[str, str], None]
 
 
 def response_requests_clarification(text: str) -> bool:
@@ -36,6 +37,7 @@ class ExecutionService:
         notifier: Notifier,
         event_bus: Any | None = None,
         execution_guard: Callable[[], bool] | None = None,
+        completion_callback: CompletionCallback | None = None,
         source: str = "telegram_runtime_v1.4",
         created_by: str = "telegram-owner",
     ) -> None:
@@ -49,6 +51,7 @@ class ExecutionService:
         self.notifier = notifier
         self.event_bus = event_bus
         self.execution_guard = execution_guard
+        self.completion_callback = completion_callback
         self.source = source
         self.created_by = created_by
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nexora-task")
@@ -144,6 +147,16 @@ class ExecutionService:
             else:
                 task = self.tasks.transition(namespace, task_id, "COMPLETED", event="WORKFLOW_COMPLETED")
             self._notify(format_task_outcome_v14(task), None)
+            if task["status"] == "COMPLETED" and self.completion_callback is not None:
+                try:
+                    self.completion_callback(namespace, task_id)
+                except Exception as exc:
+                    self.audit.record(
+                        "ARTIFACT_NOTIFICATION_FAILED",
+                        task_id=task_id,
+                        error_type=type(exc).__name__,
+                        error=redact_text(exc),
+                    )
             self.idempotency.set_status(namespace, key, "SUCCEEDED")
             self.audit.record("WORKFLOW_COMPLETED", task_id=task_id, status=task["status"])
         except Exception as exc:

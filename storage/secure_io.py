@@ -148,6 +148,45 @@ def secure_atomic_write_json(
     )
 
 
+def secure_atomic_write_bytes(
+    path: Path,
+    value: bytes,
+    *,
+    root: Path | None = None,
+) -> None:
+    selected = Path(path)
+    _assert_allowed(selected, root)
+    parent = ensure_private_directory(selected.parent, root=root)
+    _reject_symlinks(selected, root)
+    if selected.exists() and (selected.is_symlink() or not selected.is_file()):
+        raise RuntimeError("private storage target is unsafe")
+    temporary = parent / f".{uuid4().hex[:12]}.tmp"
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        PRIVATE_FILE_MODE,
+    )
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(bytes(value))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, PRIVATE_FILE_MODE)
+        _atomic_replace(temporary, selected)
+        os.chmod(selected, PRIVATE_FILE_MODE)
+        _fsync_directory(parent)
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def append_private_text(path: Path, value: str, *, root: Path | None = None) -> None:
     selected = Path(path)
     _assert_allowed(selected, root)

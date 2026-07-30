@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+from secrets import token_hex
 from pathlib import Path
 from typing import Any
 from urllib import error, request
@@ -98,6 +99,48 @@ class TelegramBotAPI:
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         self.call("sendMessage", payload)
+
+    def send_document(
+        self,
+        chat_id: int,
+        filename: str,
+        media_type: str,
+        content: bytes,
+    ) -> None:
+        boundary = f"nexora-{token_hex(16)}"
+        safe_name = "".join(character for character in filename if character.isalnum() or character in "._-")[:120]
+        if not safe_name:
+            safe_name = "nexora-result.md"
+        parts = [
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode(),
+            (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"document\"; filename=\"{safe_name}\"\r\n"
+                f"Content-Type: {media_type.split(';', 1)[0]}\r\n\r\n"
+            ).encode("utf-8"),
+            bytes(content),
+            f"\r\n--{boundary}--\r\n".encode(),
+        ]
+        api_request = request.Request(
+            f"{self._base_url}/sendDocument",
+            data=b"".join(parts),
+            method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        try:
+            with request.urlopen(api_request, timeout=40) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            raise TelegramAPIError(
+                f"Telegram API sendDocument failed with HTTP {exc.code}",
+                status_code=exc.code,
+            ) from None
+        except error.URLError:
+            raise TelegramAPIError("Telegram API sendDocument is unavailable") from None
+        except (TimeoutError, json.JSONDecodeError):
+            raise TelegramAPIError("Telegram API sendDocument returned an invalid response") from None
+        if not result.get("ok"):
+            raise TelegramAPIError("Telegram API sendDocument rejected the request")
 
     def answer_callback_query(self, callback_query_id: str, text: str, show_alert: bool = False) -> None:
         self.call(
@@ -250,11 +293,15 @@ def main() -> int:
     def notify_owner(text: str, reply_markup: dict[str, Any] | None = None) -> None:
         api.send_message(owner_id, text, reply_markup)
 
+    def notify_artifact(filename: str, media_type: str, content: bytes) -> None:
+        api.send_document(owner_id, filename, media_type, content)
+
     handlers = TelegramRuntimeHandlers(
         owner_id=owner_id,
         namespace_key=namespace_key,
         orchestrator=orchestrator,
         notifier=notify_owner,
+        artifact_notifier=notify_artifact,
     )
     offset: int | None = None
 

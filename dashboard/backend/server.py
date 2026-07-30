@@ -44,6 +44,7 @@ from nexora.dashboard.runtime import DashboardTaskRuntime, build_openclaw_orches
 from nexora.operations import OperationsService
 from nexora.enterprise import EnterpriseService
 from nexora.workforce import AIWorkforceService
+from nexora.storage import ArtifactRepository, ArtifactService
 
 
 COOKIE_NAME = "__Host-nexora_session"
@@ -134,6 +135,12 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
         event_bus=events,
     )
     audit = AuditService(AuditRepository(config.state_root / "audit"), database=database)
+    artifacts = ArtifactService(
+        ArtifactRepository(config.state_root / "artifacts"),
+        database,
+        audit,
+    )
+    events.subscribe(artifacts.event_sink)
     sessions = SessionManager(session_key, ttl_seconds=config.session_ttl_seconds, audit=audit.record)
     auth = AuthService(password_hash, sessions, BruteForceProtector(), audit.record)
     skills = SkillRegistry(
@@ -167,7 +174,8 @@ def create_application(config: DashboardConfig) -> DashboardApplication:
             config.gateway_timeout_seconds,
         )
         task_runtime = DashboardTaskRuntime(orchestrator, tasks, approvals, audit, policy, config.state_root, events)
-    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise, workforce=workforce)
+    artifacts.backfill(namespace)
+    api = DashboardAPI(database, registry, policy, tasks, approvals, audit, skills, api_keys, webhooks, metrics, namespace, templates=templates, playground=playground, teams=teams, billing=billing, admin_console=admin_console, marketplace=marketplace, creators=creators, ecosystem=ecosystem, task_runtime=task_runtime, operations=operations, enterprise=enterprise, workforce=workforce, artifacts=artifacts)
     return DashboardApplication(config, api, auth, sessions, DashboardPermissions(), RequestRateLimiter())
 
 
@@ -398,6 +406,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self.app.api.audit_access(path)
                 self._download(filename, content)
                 return
+            artifact_download_match = re.fullmatch(r"/api/artifacts/(ART-[A-F0-9]{16})/download", path)
+            if artifact_download_match:
+                filename, media_type, content = self.app.api.artifact_file(artifact_download_match.group(1), query)
+                self.app.api.audit_access(path)
+                self._download(filename, content, media_type)
+                return
             if path == "/api/session":
                 response: Any = {"authenticated": True, "csrf_token": session.csrf_token, "expires_at": session.expires_at}
             elif path == "/api/health":
@@ -408,6 +422,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 response = self.app.api.activity_feed(query)
             elif path == "/api/notifications":
                 response = self.app.api.notifications_feed(query)
+            elif path == "/api/artifacts":
+                response = self.app.api.list_artifacts(query)
+            elif re.fullmatch(r"/api/artifacts/ART-[A-F0-9]{16}", path):
+                response = self.app.api.artifact_details(path.rsplit("/", 1)[-1], query)
             elif path == "/api/workspace-overview":
                 response = self.app.api.workspace_overview(query)
             elif path == "/api/agents/status":
@@ -611,6 +629,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return "agents:read"
             if path == "/api/tasks" or path.startswith("/api/tasks/"):
                 return "tasks:read"
+            if path == "/api/artifacts" or path.startswith("/api/artifacts/"):
+                return "artifacts:read"
             if path == "/api/agents" or path.startswith("/api/agents/"):
                 return "agents:read"
             if path == "/api/skills" or path.startswith("/api/skills/"):
@@ -727,7 +747,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         asset = path.removeprefix("/assets/") if path.startswith("/assets/") else ""
         if asset and re.fullmatch(r"[A-Za-z0-9_.-]+", asset):
             target = frontend / asset
-        elif path == "/" or path.startswith(("/home", "/workbench", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/ai-team", "/developer", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations", "/security-center", "/policies", "/sla", "/storage-health", "/enterprise")):
+        elif path == "/" or path.startswith(("/home", "/workbench", "/artifacts", "/activity", "/notifications", "/workspace", "/analytics", "/onboarding", "/tasks", "/agents", "/skills", "/templates", "/playground", "/organizations", "/workspaces", "/members", "/knowledge", "/billing", "/usage", "/plans", "/admin", "/marketplace", "/ai-team", "/developer", "/my-items", "/publisher", "/creator", "/agent-center", "/agent-teams", "/agent-memory", "/agent-planning", "/agent-evaluations", "/sdk", "/approvals", "/audit", "/api-keys", "/webhooks", "/metrics", "/integrations", "/security-center", "/policies", "/sla", "/storage-health", "/enterprise")):
             target = frontend / "index.html"
         else:
             self._json(404, {"error": "NOT_FOUND"})
@@ -766,11 +786,21 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _download(self, filename: str, content: bytes) -> None:
+    def _download(self, filename: str, content: bytes, content_type: str = "text/plain; charset=utf-8") -> None:
         safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", filename)[:160] or "nexora-result.txt"
+        allowed_types = {
+            "text/plain; charset=utf-8",
+            "text/markdown; charset=utf-8",
+            "application/json; charset=utf-8",
+            "text/csv; charset=utf-8",
+            "application/pdf",
+            "image/png",
+            "image/jpeg",
+        }
+        selected_type = content_type if content_type in allowed_types else "application/octet-stream"
         self.send_response(200)
         self._security_headers()
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", selected_type)
         self.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")

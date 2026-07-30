@@ -15,6 +15,7 @@ class DashboardPermissions:
         "tasks:create",
         "tasks:continue",
         "tasks:cancel",
+        "artifacts:read",
         "agents:read",
         "approvals:read",
         "approvals:decide",

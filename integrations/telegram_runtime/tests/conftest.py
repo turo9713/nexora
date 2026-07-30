@@ -107,12 +107,18 @@ def disable_rate_limit(monkeypatch):
 def handler_factory(tmp_path: Path):
     handlers: list[TelegramRuntimeHandlers] = []
 
-    def factory(orchestrator: FakeOrchestrator | None = None, notifier=None, suffix: str = "default"):
+    def factory(
+        orchestrator: FakeOrchestrator | None = None,
+        notifier=None,
+        suffix: str = "default",
+        artifact_notifier=None,
+    ):
         handler = TelegramRuntimeHandlers(
             owner_id=OWNER_ID,
             namespace_key=NAMESPACE_KEY,
             orchestrator=orchestrator or FakeOrchestrator(),
             notifier=notifier,
+            artifact_notifier=artifact_notifier,
             state_path=tmp_path / suffix / "state",
             context_path=tmp_path / suffix / "context",
         )

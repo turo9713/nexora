@@ -131,6 +131,16 @@ RBAC, tenant, rate-limit, request/correlation ID, and audit controls. See
 [User Dashboard](docs/user-dashboard.md), [Realtime](docs/realtime.md),
 [Notifications](docs/notifications.md), and [Operations](docs/operations.md).
 
+## Files and Artifacts (v4.5)
+
+Completed tasks produce private Markdown and JSON result artifacts. The
+authenticated `/artifacts` page lists files only from the active workspace,
+supports safe text preview and download, and links them from task details.
+The Telegram owner also receives the Markdown result when a task completes.
+Artifacts are stored with checksum verification, `0600` file permissions and
+`0700` directories; executable uploads and user-selected host paths are not
+supported. See [Files and Artifacts](docs/artifacts.md).
+
 ## Templates and Playground
 
 Use the authenticated Dashboard sections `/templates` and `/playground`, or the

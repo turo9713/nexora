@@ -2,6 +2,24 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.5.0] - 2026-07-30
+
+### Added
+
+- A workspace-scoped Files & Artifacts Center with safe previews and downloads.
+- Automatic Markdown and JSON result artifacts for completed tasks.
+- Optional Markdown result delivery to the existing Telegram owner.
+- Artifact links on task and Workbench detail pages.
+
+### Security
+
+- Artifacts use atomic private writes, SHA-256 integrity checks, `0600` files,
+  `0700` directories, validated internal paths, tenant isolation, RBAC, and
+  audit events.
+- Only non-executable Markdown and JSON result formats are generated. The
+  browser and Telegram integrations receive no shell, Docker, Gateway, or
+  arbitrary host-filesystem access.
+
 ## [4.4.0] - 2026-07-30
 
 ### Added

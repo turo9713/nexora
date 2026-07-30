@@ -112,3 +112,21 @@ The v2.2 `activity_events` journal is reused rather than duplicated. Dashboard
 and Public API requests resolve identity, workspace membership, RBAC, and scope
 before querying these projections. Realtime is a same-origin authenticated
 read stream; it is not a command channel and has no provider or tool access.
+
+## Files and artifacts v4.5
+
+```text
+Task COMPLETED
+      |
+      v
+Artifact Service -> private workspace storage -> Dashboard API -> Browser
+      |                         |
+      +-------------------------+-----------------------------> Telegram owner
+```
+
+The Artifact Service subscribes to canonical task completion events and reads
+only the bounded task result projection. It generates Markdown and JSON; no
+publisher code, user-supplied host path, or executable file is accepted.
+Artifact identity includes owner, workspace and task scope. Dashboard reads
+still pass authentication, RBAC and workspace membership checks. Stored bytes
+are verified against SHA-256 metadata before preview or download.

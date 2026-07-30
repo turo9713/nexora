@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,7 @@ class DashboardAPI:
         operations: OperationsService | None = None,
         enterprise: EnterpriseService | None = None,
         workforce: AIWorkforceService | None = None,
+        artifacts: Any | None = None,
     ) -> None:
         self.database = database
         self.registry = registry
@@ -98,6 +100,7 @@ class DashboardAPI:
         self.operations = operations
         self.enterprise = enterprise
         self.workforce = workforce
+        self.artifacts = artifacts
         self.task_read_model = TaskReadModel(database, tasks)
 
     def health(self) -> dict[str, Any]:
@@ -308,6 +311,11 @@ class DashboardAPI:
         ]
         task["downloads"] = ([{"id": "result", "name": f"{task_id}-result.txt", "type": "text/plain"}]
                              if task.get("result_summary") else [])
+        task["artifacts"] = (
+            self.artifacts.list(self.namespace, str(raw.get("workspace_id")), task_id=task_id)
+            if self.artifacts is not None and raw.get("workspace_id")
+            else []
+        )
         return task
 
     def task_events(self, task_id: str) -> dict[str, Any]:
@@ -366,6 +374,77 @@ class DashboardAPI:
         title = redact_text(task.get("title"), 200)
         content = f"Nexora task {task_id}\nTitle: {title}\nStatus: {task.get('status')}\n\n{result}\n"
         return f"{task_id}-result.txt", content.encode("utf-8")
+
+    def list_artifacts(self, query: dict[str, str]) -> dict[str, Any]:
+        artifacts = self._artifacts()
+        workspace_id = self._artifact_workspace(query.get("workspace_id"))
+        task_id = str(query.get("task_id") or "").strip() or None
+        if task_id is not None and not re.fullmatch(r"[A-Za-z0-9-]{3,100}", task_id):
+            raise DashboardAPIError(400, "INVALID_FILTER", "Некорректный Task ID")
+        try:
+            limit = max(1, min(200, int(query.get("limit", "100"))))
+        except ValueError as exc:
+            raise DashboardAPIError(400, "INVALID_FILTER", "Некорректный лимит") from exc
+        return {
+            "workspace_id": workspace_id,
+            "items": artifacts.list(self.namespace, workspace_id, task_id=task_id, limit=limit),
+        }
+
+    def artifact_details(self, artifact_id: str, query: dict[str, str]) -> dict[str, Any]:
+        try:
+            item = self._artifacts().details(self.namespace, artifact_id)
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise DashboardAPIError(404, "ARTIFACT_NOT_FOUND", "Файл не найден или недоступен") from exc
+        return self._authorize_artifact(item, query)
+
+    def artifact_file(self, artifact_id: str, query: dict[str, str]) -> tuple[str, str, bytes]:
+        artifacts = self._artifacts()
+        try:
+            metadata, content = artifacts.download(self.namespace, artifact_id)
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise DashboardAPIError(404, "ARTIFACT_NOT_FOUND", "Файл не найден или недоступен") from exc
+        item = self._authorize_artifact(metadata, query)
+        self.audit.record(
+            "ARTIFACT_DOWNLOADED",
+            source="dashboard",
+            action_result="SUCCESS",
+            artifact_id=item["id"],
+            task_id=item["task_id"],
+            workspace_id=item["workspace_id"],
+        )
+        return str(item["name"]), str(item["media_type"]), content
+
+    def _artifacts(self) -> Any:
+        if self.artifacts is None:
+            raise DashboardAPIError(503, "ARTIFACTS_UNAVAILABLE", "Хранилище файлов недоступно")
+        return self.artifacts
+
+    def _artifact_workspace(self, requested: Any) -> str:
+        if self.teams is None:
+            raise DashboardAPIError(503, "ARTIFACTS_UNAVAILABLE", "Workspace недоступен")
+        selected = str(requested or "").strip()
+        available = self.teams.list_workspaces(self.namespace)
+        if not selected:
+            personal = [item for item in available if item.get("name") == "Personal Workspace"]
+            if len(available) == 1:
+                selected = str(available[0]["id"])
+            elif len(personal) == 1:
+                selected = str(personal[0]["id"])
+        if not selected or not any(str(item.get("id")) == selected for item in available):
+            raise DashboardAPIError(404, "WORKSPACE_NOT_FOUND", "Workspace не найден или недоступен")
+        try:
+            self.teams.workspace_context(self.namespace, selected, "tasks:read")
+        except TeamAccessDenied as exc:
+            raise DashboardAPIError(404, "WORKSPACE_NOT_FOUND", "Workspace не найден или недоступен") from exc
+        return selected
+
+    def _authorize_artifact(self, item: dict[str, Any] | None, query: dict[str, str]) -> dict[str, Any]:
+        if item is None:
+            raise DashboardAPIError(404, "ARTIFACT_NOT_FOUND", "Файл не найден или недоступен")
+        workspace_id = self._artifact_workspace(query.get("workspace_id") or item.get("workspace_id"))
+        if workspace_id != item.get("workspace_id"):
+            raise DashboardAPIError(404, "ARTIFACT_NOT_FOUND", "Файл не найден или недоступен")
+        return item
 
     def _dashboard_workspace_context(self, value: dict[str, Any]) -> dict[str, Any]:
         if self.teams is None:
