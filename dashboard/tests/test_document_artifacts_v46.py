@@ -19,7 +19,18 @@ def sample_task() -> dict[str, str]:
     return {
         "task_id": "NX-DOC-001",
         "title": "Создай Excel-таблицу и ZIP-архив отчёта",
-        "result": "## Итог\n- Таблица подготовлена\n- Архив сформирован\nСумма: 125 000 ₽",
+        "result": (
+            "## Итог\n"
+            "- Таблица подготовлена\n"
+            "- Архив сформирован\n"
+            "## Данные\n"
+            "| Компонент | Статус | Описание |\n"
+            "|---|---|---|\n"
+            "| Runtime | Готово | Выполнение задач |\n"
+            "## Рекомендации\n"
+            "1. Проверить результат перед публикацией.\n"
+            "Сумма: 125 000 ₽"
+        ),
         "completed_at": "2026-07-30T12:00:00+00:00",
     }
 
@@ -48,6 +59,8 @@ def test_docx_is_macro_free_without_external_relationships() -> None:
         document = package.read("word/document.xml").decode("utf-8")
         assert "NX-DOC-001" in document
         assert "Таблица подготовлена" in document
+        assert "Runtime" in document
+        assert document.count("<w:tbl>") >= 2
 
 
 def test_pdf_embeds_cyrillic_font_and_has_no_active_actions() -> None:
@@ -63,12 +76,21 @@ def test_xlsx_is_formula_macro_and_external_link_free() -> None:
     with zipfile.ZipFile(io.BytesIO(payload)) as package:
         names = package.namelist()
         assert "xl/worksheets/sheet1.xml" in names
+        assert "xl/worksheets/sheet2.xml" in names
+        assert "xl/worksheets/sheet3.xml" in names
         assert not any(name.startswith("xl/externalLinks/") for name in names)
         assert not any(name.casefold().endswith(("vbaproject.bin", ".exe", ".dll")) for name in names)
-        sheet = package.read("xl/worksheets/sheet1.xml").decode("utf-8")
-        assert "<f" not in sheet
-        assert "NX-DOC-001" in sheet
-        assert "Таблица подготовлена" in sheet
+        workbook = package.read("xl/workbook.xml").decode("utf-8")
+        assert all(name in workbook for name in ("Сводка", "Данные", "Рекомендации"))
+        sheets = [
+            package.read(f"xl/worksheets/sheet{index}.xml").decode("utf-8")
+            for index in (1, 2, 3)
+        ]
+        assert all("<f" not in sheet for sheet in sheets)
+        assert "NX-DOC-001" in sheets[0]
+        assert "Таблица подготовлена" in sheets[1]
+        assert "Runtime" in sheets[1]
+        assert "Проверить результат" in sheets[2]
 
 
 def test_zip_contains_only_allowlisted_files_and_checksum_manifest() -> None:
@@ -82,6 +104,7 @@ def test_zip_contains_only_allowlisted_files_and_checksum_manifest() -> None:
         names = set(archive.namelist())
         assert names == {
             "MANIFEST.json",
+            "README.txt",
             "result.md",
             "result.json",
             "result.docx",
@@ -90,7 +113,8 @@ def test_zip_contains_only_allowlisted_files_and_checksum_manifest() -> None:
         }
         manifest = json.loads(archive.read("MANIFEST.json"))
         assert manifest["task_id"] == "NX-DOC-001"
-        assert len(manifest["files"]) == 5
+        assert len(manifest["files"]) == 6
+        assert b"Nexora task artifact package" in archive.read("README.txt")
         assert all(".." not in Path(name).parts for name in names)
 
 

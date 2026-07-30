@@ -140,6 +140,12 @@ class DialogueSessionStore:
                 "creation or attachment is unavailable. Provide substantive report and table "
                 "content for the artifact layer to render; never emit binary data or file paths."
             ),
+            (
+                "Structure completed work with Markdown headings, short paragraphs, and bullets. "
+                "When the owner requests a spreadsheet or table, include an explicit Markdown "
+                "table with meaningful column names and populated rows. Provide the finished "
+                "content now; do not offer to provide it in a later message."
+            ),
             "Conversation:",
         ]
         labels = {"user": "OWNER", "assistant": "ASSISTANT"}

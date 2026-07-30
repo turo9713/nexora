@@ -2,6 +2,26 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.6.2] - 2026-07-30
+
+### Improved
+
+- DOCX and PDF artifacts now preserve headings, lists, key-value fields and
+  Markdown tables instead of flattening the result into a single paragraph.
+- XLSX artifacts now contain formatted `Сводка`, `Данные` and `Рекомендации`
+  worksheets with frozen headers, filters and useful structured rows.
+- ZIP packages now include a human-readable `README.txt` alongside the
+  checksum manifest and generated result files.
+- Telegram sends every generated document with a short format-specific caption.
+
+### Security
+
+- Rich-content parsing is deterministic, bounded and side-effect free.
+- Spreadsheet output remains formula-free, macro-free and external-link-free;
+  ZIP contents remain allowlisted and checksum-verified.
+- Artifact generation continues to use only already-redacted task content and
+  does not add filesystem, shell, Gateway or secret access.
+
 ## [4.6.1] - 2026-07-30
 
 ### Fixed

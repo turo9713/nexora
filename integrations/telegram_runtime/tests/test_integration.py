@@ -38,17 +38,18 @@ def test_completed_task_sends_private_document_artifact(handler_factory):
     delivered = []
     handler = handler_factory(
         FakeOrchestrator(["Безопасный итог"]),
-        artifact_notifier=lambda name, media_type, payload: delivered.append(
-            (name, media_type, payload)
+        artifact_notifier=lambda name, media_type, payload, caption: delivered.append(
+            (name, media_type, payload, caption)
         ),
     )
     handler.handle_update(owner_message(1, "/newtask Artifact result"))
     wait_for(lambda: active_task(handler)["status"] == "COMPLETED" and bool(delivered))
 
-    name, media_type, payload = delivered[0]
+    name, media_type, payload, caption = delivered[0]
     assert name.endswith("-result.docx")
     assert media_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     assert payload.startswith(b"PK")
+    assert "полный структурированный отчёт" in caption
     workspace_id = active_task(handler)["workspace_id"]
     files = list((handler.artifacts.repository.root / handler.namespace / workspace_id).rglob("*"))
     assert files
@@ -61,8 +62,8 @@ def test_explicit_formats_are_all_delivered_and_required_before_completion(handl
     )
     handler = handler_factory(
         fake,
-        artifact_notifier=lambda name, media_type, payload: delivered.append(
-            (name, media_type, payload)
+        artifact_notifier=lambda name, media_type, payload, caption: delivered.append(
+            (name, media_type, payload, caption)
         ),
     )
     handler.handle_update(
@@ -71,9 +72,10 @@ def test_explicit_formats_are_all_delivered_and_required_before_completion(handl
     wait_for(lambda: active_task(handler)["status"] == "COMPLETED")
     wait_for(lambda: len(delivered) == 4)
 
-    suffixes = [Path(name).suffix for name, _, _ in delivered]
+    suffixes = [Path(name).suffix for name, _, _, _ in delivered]
     assert suffixes == [".docx", ".xlsx", ".pdf", ".zip"]
-    assert all(payload for _, _, payload in delivered)
+    assert all(payload for _, _, payload, _ in delivered)
+    assert all("Задача:" in caption for _, _, _, caption in delivered)
     assert "artifact layer" in fake.calls[0]["description"]
 
 

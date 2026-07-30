@@ -106,13 +106,24 @@ class TelegramBotAPI:
         filename: str,
         media_type: str,
         content: bytes,
+        caption: str = "",
     ) -> None:
         boundary = f"nexora-{token_hex(16)}"
         safe_name = "".join(character for character in filename if character.isalnum() or character in "._-")[:120]
         if not safe_name:
             safe_name = "nexora-result.md"
+        safe_caption = "".join(
+            character
+            for character in str(caption or "")
+            if character == "\n" or ord(character) >= 32
+        ).strip()[:900]
         parts = [
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode(),
+            (
+                f"--{boundary}\r\n"
+                "Content-Disposition: form-data; name=\"caption\"\r\n\r\n"
+                f"{safe_caption}\r\n"
+            ).encode("utf-8"),
             (
                 f"--{boundary}\r\n"
                 f"Content-Disposition: form-data; name=\"document\"; filename=\"{safe_name}\"\r\n"
@@ -293,8 +304,13 @@ def main() -> int:
     def notify_owner(text: str, reply_markup: dict[str, Any] | None = None) -> None:
         api.send_message(owner_id, text, reply_markup)
 
-    def notify_artifact(filename: str, media_type: str, content: bytes) -> None:
-        api.send_document(owner_id, filename, media_type, content)
+    def notify_artifact(
+        filename: str,
+        media_type: str,
+        content: bytes,
+        caption: str,
+    ) -> None:
+        api.send_document(owner_id, filename, media_type, content, caption)
 
     handlers = TelegramRuntimeHandlers(
         owner_id=owner_id,

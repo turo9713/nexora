@@ -1,6 +1,6 @@
 # Files and Artifacts
 
-Nexora 4.6 extends the private result-file layer without exposing the host
+Nexora 4.6.2 extends the private result-file layer without exposing the host
 filesystem or OpenClaw Gateway.
 
 ## User flow
@@ -9,7 +9,8 @@ filesystem or OpenClaw Gateway.
 2. Nexora generates Markdown, JSON, DOCX and PDF result artifacts.
 3. Open `/artifacts` to filter by task, preview text, or download a file.
 4. Task and Workbench details also show their related files.
-5. The existing Telegram owner receives one preferred document result.
+5. The existing Telegram owner receives every generated rich document with a
+   short format-specific caption.
 
 ## Storage and integrity
 
@@ -32,9 +33,12 @@ Every completed task produces:
 - DOCX using the Nexora business-brief style;
 - PDF with an embedded Cyrillic-capable DejaVu Sans font.
 
-Requests that explicitly concern spreadsheets, tables, budgets, metrics,
-analytics or finance also produce XLSX. Requests for an archive, project file
-set or source bundle also produce ZIP with `MANIFEST.json` checksums.
+DOCX and PDF preserve detected headings, lists, key-value fields and Markdown
+tables. Requests that explicitly concern spreadsheets, tables, budgets,
+metrics, analytics or finance also produce a three-sheet XLSX workbook:
+`Сводка`, `Данные` and `Рекомендации`. Requests for an archive, project file
+set or source bundle also produce ZIP with a human-readable `README.txt` and
+`MANIFEST.json` checksums.
 
 All renderers run in memory and receive only the redacted task title/result.
 DOCX/XLSX packages are rejected if they contain executable members or external
@@ -44,8 +48,8 @@ user-provided paths are never accepted.
 
 The Dashboard previews only Markdown and JSON. Binary formats show metadata and
 must be downloaded through the authenticated, workspace-scoped endpoint.
-Telegram sends one preferred result document: DOCX, XLSX, PDF, ZIP, then
-Markdown as fallback.
+Telegram sends all generated rich document formats and uses Markdown as a
+fallback when no binary artifact is available.
 
 ## Access control
 

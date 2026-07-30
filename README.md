@@ -131,14 +131,15 @@ RBAC, tenant, rate-limit, request/correlation ID, and audit controls. See
 [User Dashboard](docs/user-dashboard.md), [Realtime](docs/realtime.md),
 [Notifications](docs/notifications.md), and [Operations](docs/operations.md).
 
-## Files and Artifacts (v4.6)
+## Files and Artifacts (v4.6.2)
 
 Completed tasks produce private Markdown, JSON, DOCX and PDF result artifacts. The
 authenticated `/artifacts` page lists files only from the active workspace,
 supports safe text preview and download, and links them from task details.
 Spreadsheet/analytics requests also produce XLSX, while explicit archive or
-file-set requests produce ZIP. The Telegram owner receives one preferred
-document when a task completes.
+file-set requests produce ZIP. DOCX and PDF preserve headings, lists and tables;
+XLSX separates summary, structured data and recommendations. The Telegram owner
+receives every generated rich document with a format-specific caption.
 Artifacts are stored with checksum verification, `0600` file permissions and
 `0700` directories. Office files are macro-free and have no external
 relationships; PDFs contain no active actions. Executable uploads and

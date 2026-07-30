@@ -87,7 +87,7 @@ class TelegramRuntimeHandlers:
         namespace_key: bytes,
         orchestrator: Orchestrator | None = None,
         notifier: Notifier | None = None,
-        artifact_notifier: Callable[[str, str, bytes], None] | None = None,
+        artifact_notifier: Callable[[str, str, bytes, str], None] | None = None,
         state_path: Path = STATE_PATH,
         context_path: Path = CONTEXT_PATH,
     ) -> None:
@@ -172,10 +172,17 @@ class TelegramRuntimeHandlers:
                 selected.append(item)
         for item in selected:
             metadata, payload = self.artifacts.download(namespace, str(item["id"]))
+            caption = {
+                "docx": "DOCX — полный структурированный отчёт",
+                "xlsx": "XLSX — сводка, данные и рекомендации",
+                "pdf": "PDF — версия отчёта для просмотра и печати",
+                "zip": "ZIP — полный комплект файлов с контрольными суммами",
+            }[str(metadata["kind"])]
             self._artifact_notifier(
                 str(metadata["name"]),
                 str(metadata["media_type"]),
                 payload,
+                f"{caption}\nЗадача: {task_id}",
             )
             self.audit.record(
                 "ARTIFACT_SENT_TO_OWNER",
