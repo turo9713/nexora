@@ -79,6 +79,34 @@ def test_explicit_formats_are_all_delivered_and_required_before_completion(handl
     assert "artifact layer" in fake.calls[0]["description"]
 
 
+def test_long_task_keeps_trailing_artifact_intent(handler_factory):
+    delivered = []
+    handler = handler_factory(
+        FakeOrchestrator(["Содержательный результат без названий форматов."]),
+        artifact_notifier=lambda name, media_type, payload, caption: delivered.append(
+            (name, media_type, payload, caption)
+        ),
+    )
+    description = (
+        "Создай содержательный отчёт о возможностях Nexora. "
+        "Добавь таблицу сравнения компонентов и три практические рекомендации. "
+        "Нужны Excel-таблица и ZIP-архив."
+    )
+    handler.handle_update(owner_message(1, f"/newtask {description}"))
+    wait_for(lambda: active_task(handler)["status"] == "COMPLETED")
+    wait_for(lambda: len(delivered) == 4)
+
+    task = active_task(handler)
+    assert len(task["title"]) <= 100
+    assert task["title"].endswith("[XLSX] [ZIP]")
+    assert [Path(name).suffix for name, _, _, _ in delivered] == [
+        ".docx",
+        ".xlsx",
+        ".pdf",
+        ".zip",
+    ]
+
+
 def test_missing_required_artifact_fails_closed(handler_factory, monkeypatch):
     handler = handler_factory(FakeOrchestrator(["Safe result"]))
 

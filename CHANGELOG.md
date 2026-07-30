@@ -13,6 +13,8 @@ All notable changes follow Semantic Versioning.
 - ZIP packages now include a human-readable `README.txt` alongside the
   checksum manifest and generated result files.
 - Telegram sends every generated document with a short format-specific caption.
+- Long Telegram task descriptions retain explicit XLSX/ZIP intent in the safe
+  short title, so trailing format requirements cannot be lost by truncation.
 
 ### Security
 

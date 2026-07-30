@@ -5,6 +5,8 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any
 
+from nexora.storage.document_artifacts import ARCHIVE_HINTS, SPREADSHEET_HINTS
+
 from ..storage.task_repository import TaskRepository
 from .progress_service import ProgressService, TERMINAL_STATUSES, utc_now
 
@@ -24,6 +26,21 @@ SAFE_ERROR_CODES = {
 
 def _clean_text(value: Any, limit: int) -> str:
     return " ".join(str(value or "").replace("\x00", "").split())[:limit]
+
+
+def _task_title(value: Any, limit: int = 100) -> str:
+    """Keep a short title without losing explicit rich-artifact requirements."""
+
+    normalized = " ".join(str(value or "").replace("\x00", "").split())
+    folded = normalized.casefold()
+    markers = []
+    if any(hint in folded for hint in SPREADSHEET_HINTS):
+        markers.append("[XLSX]")
+    if any(hint in folded for hint in ARCHIVE_HINTS):
+        markers.append("[ZIP]")
+    suffix = f" {' '.join(markers)}" if markers else ""
+    base = normalized[: max(0, limit - len(suffix))].rstrip()
+    return f"{base}{suffix}"[:limit]
 
 
 class TaskService:
@@ -70,7 +87,7 @@ class TaskService:
             "task_id": task_id,
             "owner_namespace": namespace,
             "session_id": session_id,
-            "title": _clean_text(title, 100) or "Новая задача",
+            "title": _task_title(title, 100) or "Новая задача",
             "status": "NEW",
             "stage": "Создание задачи",
             "progress": 0,
