@@ -1,6 +1,6 @@
 "use strict";
 
-const state={csrf:null,realtime:null,realtimeWorkspace:null,realtimeCallback:null};
+const state={csrf:null,realtime:null,realtimeWorkspace:null,realtimeCallback:null,notificationWorkspace:null,notificationRefresh:null};
 const el=id=>document.getElementById(id);
 const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=String(text);if(cls)n.className=cls;return n};
 const fmt=value=>value?new Date(value).toLocaleString("ru-RU",{dateStyle:"short",timeStyle:"short"}):"—";
@@ -10,7 +10,7 @@ async function api(path,options={}){const headers={"Accept":"application/json",.
 function clear(){el("content").replaceChildren()}
 function card(title,wide=false){const c=node("article",undefined,"card "+(wide?"wide":""));c.append(node("h2",title));return c}
 function metric(label,value){const m=node("div",undefined,"metric");m.append(node("strong",value),node("span",label));return m}
-function showLogin(){el("app").classList.add("hidden");el("login").classList.remove("hidden");state.csrf=null;state.realtimeCallback=null;if(state.realtime){state.realtime.close();state.realtime=null;state.realtimeWorkspace=null}}
+function showLogin(){el("app").classList.add("hidden");el("login").classList.remove("hidden");state.csrf=null;state.realtimeCallback=null;state.notificationWorkspace=null;closeNotificationTray();if(state.realtime){state.realtime.close();state.realtime=null;state.realtimeWorkspace=null}}
 function showApp(){el("login").classList.add("hidden");el("app").classList.remove("hidden")}
 function title(value){el("page-title").textContent=value;document.title=value+" · Nexora"}
 function selectMenuTab(name,remember=true){
@@ -31,6 +31,38 @@ function activate(path){
   if(panel)selectMenuTab(panel.dataset.menuPanel,false);
 }
 function errorView(error){clear();const c=card("Не удалось загрузить данные");c.classList.add("full");c.append(node("p",error.message,"danger"));el("content").append(c)}
+
+function closeNotificationTray(){
+  const tray=el("notification-tray");const toggle=el("notification-toggle");
+  if(tray)tray.classList.add("hidden");
+  if(toggle)toggle.setAttribute("aria-expanded","false");
+}
+async function refreshNotificationCenter(render=true){
+  if(!state.notificationWorkspace)return;
+  const data=await api(`/api/notifications?workspace_id=${encodeURIComponent(state.notificationWorkspace)}&limit=8`);
+  const count=el("notification-count");count.textContent=String(data.unread||0);count.classList.toggle("hidden",!data.unread);
+  el("notification-toggle").setAttribute("aria-label",data.unread?`Уведомления: ${data.unread} непрочитанных`:"Новых уведомлений нет");
+  if(!render)return data;
+  const items=el("notification-items");items.replaceChildren();
+  (data.items||[]).forEach(item=>{
+    const row=node("div",undefined,"notification-item");const info=node("div");
+    info.append(node("strong",item.message),node("small",`${item.type} · ${fmt(item.created_at)}`,"muted"));row.append(info);
+    if(item.status==="UNREAD"){const read=node("button","Прочитано","secondary");read.type="button";read.onclick=async event=>{event.stopPropagation();read.disabled=true;await api(`/api/notifications/${item.id}/read?workspace_id=${encodeURIComponent(state.notificationWorkspace)}`,{method:"POST",body:"{}"});await refreshNotificationCenter(true)};row.append(read)}
+    items.append(row);
+  });
+  if(!data.items?.length)items.append(node("div","Новых уведомлений нет","empty"));
+  return data;
+}
+async function initializeNotificationCenter(){
+  const summary=await api("/api/dashboard");
+  state.notificationWorkspace=summary.workspace.id;
+  await refreshNotificationCenter(false);
+  connectRealtime(summary.workspace.id,summary.realtime_cursor);
+}
+function scheduleNotificationRefresh(){
+  if(state.notificationRefresh)clearTimeout(state.notificationRefresh);
+  state.notificationRefresh=setTimeout(()=>refreshNotificationCenter(!el("notification-tray").classList.contains("hidden")).catch(()=>{}),250);
+}
 
 async function dashboard(){title("Nexora Dashboard");activate("/");const data=await api("/api/health");clear();const grid=node("div",undefined,"grid");const health=card("System Health",true);[["Runtime",data.runtime],["Web Runtime",data.web_runtime],["Telegram",data.telegram],["API",data.api],["Database",data.database],["Marketplace",data.marketplace],["Agents",`${data.agents_loaded} loaded`],["Skills",`${data.skills.active}/${data.skills.loaded} active`],["Gateway",data.gateway]].forEach(([k,v])=>{const row=node("div",undefined,"health-row");row.append(node("span",k),node("strong",v,String(v).toLowerCase()==="ok"?"ok":"warning"));health.append(row)});const tasks=card("Tasks Overview");const metrics=node("div",undefined,"metrics");metrics.append(metric("Running",data.tasks.running),metric("Completed today",data.tasks.completed_today),metric("Failed",data.tasks.failed),metric("Waiting approval",data.tasks.waiting_approval));tasks.append(metrics);const agents=card("Platform",true);agents.append(node("p","API, agents, skills и integrations используют Policy Engine и одноразовые approvals.","muted"));const go=node("button","Открыть метрики","secondary");go.onclick=()=>navigate("/metrics");agents.append(go);grid.append(health,tasks,agents);el("content").append(grid)}
 
@@ -104,7 +136,7 @@ async function creatorPage(){title("Creator Dashboard");activate("/creator");con
 const routeV23=route;
 route=async function(){const path=location.pathname;try{if(path==="/marketplace")return await marketplacePage();if(path.startsWith("/marketplace/"))return await marketplaceItemPage(decodeURIComponent(path.slice(13)));if(path==="/my-items")return await myItemsPage();if(path==="/publisher")return await publisherPage();if(path==="/creator")return await creatorPage();return await routeV23()}catch(error){if(error.message!=="UNAUTHORIZED")errorView(error)}};
 
-const REALTIME_EVENTS=["TASK_CREATED","TASK_STARTED","TASK_PROGRESS_UPDATED","TASK_STAGE_CHANGED","AGENT_STARTED","AGENT_FINISHED","TASK_COMPLETED","TASK_FAILED"];
+const REALTIME_EVENTS=["TASK_CREATED","TASK_STARTED","TASK_PROGRESS_UPDATED","TASK_STAGE_CHANGED","AGENT_STARTED","AGENT_FINISHED","TASK_COMPLETED","TASK_FAILED","APPROVAL_REQUIRED"];
 function connectRealtime(workspaceId,cursor){
   if(!workspaceId)return;
   if(state.realtime&&state.realtimeWorkspace===workspaceId)return;
@@ -112,7 +144,7 @@ function connectRealtime(workspaceId,cursor){
   const query=new URLSearchParams({workspace_id:workspaceId});if(cursor)query.set("after",cursor);
   const stream=new EventSource("/api/realtime/tasks?"+query);
   if(!state.realtimeSeen)state.realtimeSeen=new Set();
-  REALTIME_EVENTS.forEach(type=>stream.addEventListener(type,event=>{try{const eventId=event.lastEventId||"";if(eventId&&state.realtimeSeen.has(eventId))return;if(eventId){state.realtimeSeen.add(eventId);if(state.realtimeSeen.size>500)state.realtimeSeen.clear()}const value=JSON.parse(event.data);if(state.realtimeCallback)state.realtimeCallback(value)}catch{}}));
+  REALTIME_EVENTS.forEach(type=>stream.addEventListener(type,event=>{try{const eventId=event.lastEventId||"";if(eventId&&state.realtimeSeen.has(eventId))return;if(eventId){state.realtimeSeen.add(eventId);if(state.realtimeSeen.size>500)state.realtimeSeen.clear()}const value=JSON.parse(event.data);scheduleNotificationRefresh();if(state.realtimeCallback)state.realtimeCallback(value)}catch{}}));
   stream.onopen=()=>{el("connection").textContent="Realtime подключён";el("connection").classList.remove("warning")};
   stream.onerror=()=>{el("connection").textContent="Восстановление realtime…";el("connection").classList.add("warning")};
   state.realtime=stream;state.realtimeWorkspace=workspaceId;
@@ -323,6 +355,10 @@ function navigate(path){history.pushState({},"",path);route()}
 document.addEventListener("click",event=>{const link=event.target.closest("a[data-route]");if(link){event.preventDefault();navigate(link.getAttribute("href"))}});window.addEventListener("popstate",route);
 document.querySelectorAll("[data-menu-tab]").forEach(button=>button.addEventListener("click",()=>selectMenuTab(button.dataset.menuTab)));
 try{selectMenuTab(sessionStorage.getItem("nexora-menu-tab")||"work",false)}catch{selectMenuTab("work",false)}
-el("login-form").addEventListener("submit",async event=>{event.preventDefault();el("login-error").textContent="";const data=Object.fromEntries(new FormData(event.target));try{const result=await api("/api/login",{method:"POST",body:JSON.stringify(data)});state.csrf=result.csrf_token;event.target.reset();showApp();route()}catch(error){el("login-error").textContent=error.message==="UNAUTHORIZED"?"Неверные данные или доступ временно ограничен.":error.message}});
+el("notification-toggle").onclick=async()=>{const tray=el("notification-tray");const opening=tray.classList.contains("hidden");tray.classList.toggle("hidden",!opening);el("notification-toggle").setAttribute("aria-expanded",String(opening));if(opening)await refreshNotificationCenter(true)};
+el("notification-close").onclick=closeNotificationTray;
+el("notification-all").onclick=()=>{closeNotificationTray();navigate("/notifications")};
+document.addEventListener("click",event=>{if(!event.target.closest(".header-actions"))closeNotificationTray()});
+el("login-form").addEventListener("submit",async event=>{event.preventDefault();el("login-error").textContent="";const data=Object.fromEntries(new FormData(event.target));try{const result=await api("/api/login",{method:"POST",body:JSON.stringify(data)});state.csrf=result.csrf_token;event.target.reset();showApp();await initializeNotificationCenter();route()}catch(error){el("login-error").textContent=error.message==="UNAUTHORIZED"?"Неверные данные или доступ временно ограничен.":error.message}});
 el("logout").onclick=async()=>{try{await api("/api/logout",{method:"POST",body:"{}"})}finally{showLogin()}};
-(async()=>{try{const session=await api("/api/session");state.csrf=session.csrf_token;showApp();route()}catch{showLogin()}})();
+(async()=>{try{const session=await api("/api/session");state.csrf=session.csrf_token;showApp();await initializeNotificationCenter();route()}catch{showLogin()}})();

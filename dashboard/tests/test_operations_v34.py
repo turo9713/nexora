@@ -124,6 +124,10 @@ def test_v34_frontend_is_event_driven_and_has_no_tool_or_task_mutation() -> None
     for route in ("/home", "/activity", "/notifications", "/workspace", "/agents/status", "/analytics", "/onboarding"):
         assert route in script or route in index
     assert "new EventSource" in script and "TASK_PROGRESS_UPDATED" in script and "onerror" in script
+    assert "initializeNotificationCenter" in script
+    assert "scheduleNotificationRefresh" in script
+    assert 'api(`/api/notifications?workspace_id=' in script
+    assert 'data.unread' in script
     assert "tasksPageV342Base" in script and "taskPageV342Base" in script
     assert "event.lastEventId" in script and "realtimeSeen" in script
     assert 'dataset.realtimeFallback="true"' in script

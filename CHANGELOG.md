@@ -2,6 +2,21 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.2.0] - 2026-07-30
+
+### Added
+
+- A global authenticated notification center in the Dashboard header with an
+  unread counter, recent notifications, and direct mark-as-read actions.
+- Automatic notification refresh driven by the existing workspace-filtered SSE
+  connection without background polling or new backend privileges.
+
+### Security
+
+- Notification reads and updates continue to use the existing authenticated,
+  CSRF-protected, workspace-isolated API.
+- No direct OpenClaw Gateway, shell, secret, or mutation access was added.
+
 ## [4.1.0] - 2026-07-30
 
 ### Added
