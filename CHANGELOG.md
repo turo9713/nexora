@@ -2,6 +2,20 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.3.0] - 2026-07-30
+
+### Added
+
+- A global quick-task composer available from every authenticated Dashboard
+  section, including a mobile-friendly launch button and safe error feedback.
+
+### Security
+
+- Task creation reuses the existing CSRF-protected, workspace-scoped Workbench
+  endpoint and creates an idempotency key for every submission.
+- Agent and workflow routing remain controlled by the existing Orchestrator,
+  Policy Engine, and approval flow.
+
 ## [4.2.0] - 2026-07-30
 
 ### Added

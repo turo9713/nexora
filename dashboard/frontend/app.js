@@ -10,7 +10,7 @@ async function api(path,options={}){const headers={"Accept":"application/json",.
 function clear(){el("content").replaceChildren()}
 function card(title,wide=false){const c=node("article",undefined,"card "+(wide?"wide":""));c.append(node("h2",title));return c}
 function metric(label,value){const m=node("div",undefined,"metric");m.append(node("strong",value),node("span",label));return m}
-function showLogin(){el("app").classList.add("hidden");el("login").classList.remove("hidden");state.csrf=null;state.realtimeCallback=null;state.notificationWorkspace=null;closeNotificationTray();if(state.realtime){state.realtime.close();state.realtime=null;state.realtimeWorkspace=null}}
+function showLogin(){el("app").classList.add("hidden");el("login").classList.remove("hidden");state.csrf=null;state.realtimeCallback=null;state.notificationWorkspace=null;closeNotificationTray();closeQuickTask();if(state.realtime){state.realtime.close();state.realtime=null;state.realtimeWorkspace=null}}
 function showApp(){el("login").classList.add("hidden");el("app").classList.remove("hidden")}
 function title(value){el("page-title").textContent=value;document.title=value+" · Nexora"}
 function selectMenuTab(name,remember=true){
@@ -62,6 +62,18 @@ async function initializeNotificationCenter(){
 function scheduleNotificationRefresh(){
   if(state.notificationRefresh)clearTimeout(state.notificationRefresh);
   state.notificationRefresh=setTimeout(()=>refreshNotificationCenter(!el("notification-tray").classList.contains("hidden")).catch(()=>{}),250);
+}
+function closeQuickTask(){
+  el("quick-task-modal").classList.add("hidden");
+  el("quick-task-form").reset();
+  el("quick-task-error").textContent="";
+  el("quick-task-submit").disabled=false;
+  el("quick-task-submit").textContent="Запустить агентов";
+}
+function openQuickTask(){
+  closeNotificationTray();
+  el("quick-task-modal").classList.remove("hidden");
+  el("quick-task-message").focus();
 }
 
 async function dashboard(){title("Nexora Dashboard");activate("/");const data=await api("/api/health");clear();const grid=node("div",undefined,"grid");const health=card("System Health",true);[["Runtime",data.runtime],["Web Runtime",data.web_runtime],["Telegram",data.telegram],["API",data.api],["Database",data.database],["Marketplace",data.marketplace],["Agents",`${data.agents_loaded} loaded`],["Skills",`${data.skills.active}/${data.skills.loaded} active`],["Gateway",data.gateway]].forEach(([k,v])=>{const row=node("div",undefined,"health-row");row.append(node("span",k),node("strong",v,String(v).toLowerCase()==="ok"?"ok":"warning"));health.append(row)});const tasks=card("Tasks Overview");const metrics=node("div",undefined,"metrics");metrics.append(metric("Running",data.tasks.running),metric("Completed today",data.tasks.completed_today),metric("Failed",data.tasks.failed),metric("Waiting approval",data.tasks.waiting_approval));tasks.append(metrics);const agents=card("Platform",true);agents.append(node("p","API, agents, skills и integrations используют Policy Engine и одноразовые approvals.","muted"));const go=node("button","Открыть метрики","secondary");go.onclick=()=>navigate("/metrics");agents.append(go);grid.append(health,tasks,agents);el("content").append(grid)}
@@ -358,6 +370,22 @@ try{selectMenuTab(sessionStorage.getItem("nexora-menu-tab")||"work",false)}catch
 el("notification-toggle").onclick=async()=>{const tray=el("notification-tray");const opening=tray.classList.contains("hidden");tray.classList.toggle("hidden",!opening);el("notification-toggle").setAttribute("aria-expanded",String(opening));if(opening)await refreshNotificationCenter(true)};
 el("notification-close").onclick=closeNotificationTray;
 el("notification-all").onclick=()=>{closeNotificationTray();navigate("/notifications")};
+el("quick-task-toggle").onclick=openQuickTask;
+el("quick-task-cancel").onclick=closeQuickTask;
+el("quick-task-modal").onclick=event=>{if(event.target===el("quick-task-modal"))closeQuickTask()};
+el("quick-task-form").onsubmit=async event=>{
+  event.preventDefault();
+  const message=el("quick-task-message").value.trim();
+  if(!message||!state.notificationWorkspace)return;
+  const submit=el("quick-task-submit");submit.disabled=true;submit.textContent="Создаём задачу…";el("quick-task-error").textContent="";
+  try{
+    const result=await api("/api/workbench/tasks",{method:"POST",body:JSON.stringify({message,workspace_id:state.notificationWorkspace,idempotency_key:requestKey("quick-task")})});
+    closeQuickTask();navigate(`/workbench/tasks/${encodeURIComponent(result.task_id||result.id)}`);
+  }catch(error){
+    submit.disabled=false;submit.textContent="Запустить агентов";el("quick-task-error").textContent=error.message;
+  }
+};
+document.addEventListener("keydown",event=>{if(event.key==="Escape"&&!el("quick-task-modal").classList.contains("hidden"))closeQuickTask()});
 document.addEventListener("click",event=>{if(!event.target.closest(".header-actions"))closeNotificationTray()});
 el("login-form").addEventListener("submit",async event=>{event.preventDefault();el("login-error").textContent="";const data=Object.fromEntries(new FormData(event.target));try{const result=await api("/api/login",{method:"POST",body:JSON.stringify(data)});state.csrf=result.csrf_token;event.target.reset();showApp();await initializeNotificationCenter();route()}catch(error){el("login-error").textContent=error.message==="UNAUTHORIZED"?"Неверные данные или доступ временно ограничен.":error.message}});
 el("logout").onclick=async()=>{try{await api("/api/logout",{method:"POST",body:"{}"})}finally{showLogin()}};

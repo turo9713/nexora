@@ -65,6 +65,21 @@ def test_workbench_home_exposes_honest_agent_routing_and_history_filters() -> No
     assert '["completed","Готовые"]' in script
 
 
+def test_global_quick_task_uses_existing_protected_workbench_contract() -> None:
+    frontend = Path(__file__).resolve().parents[1] / "frontend"
+    script = (frontend / "app.js").read_text(encoding="utf-8")
+    index = (frontend / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="quick-task-toggle"' in index
+    assert 'id="quick-task-modal"' in index
+    assert 'id="quick-task-message"' in index
+    assert 'api("/api/workbench/tasks"' in script
+    assert "workspace_id:state.notificationWorkspace" in script
+    assert 'idempotency_key:requestKey("quick-task")' in script
+    quick_task = script[script.index("function closeQuickTask"):script.index('el("login-form")')]
+    assert "agent_id" not in quick_task
+
+
 def test_dashboard_create_continue_idempotency_and_safe_download(dashboard_factory) -> None:
     app, config = dashboard_factory()
     runtime = attach_runtime(app, config)
