@@ -2,6 +2,19 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.4.0] - 2026-07-30
+
+### Added
+
+- A keyboard-first Command Center for finding and opening existing Dashboard
+  sections with `Ctrl/Command + K`.
+- A command shortcut for opening the existing global task composer.
+
+### Security
+
+- Commands are built exclusively from the authenticated navigation allowlist;
+  the palette does not add API endpoints, tools, permissions, or Gateway access.
+
 ## [4.3.0] - 2026-07-30
 
 ### Added
