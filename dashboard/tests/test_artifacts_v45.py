@@ -49,7 +49,7 @@ def test_completed_task_creates_private_checksum_verified_artifacts(dashboard_fa
     workspace, task = completed_task(app, "Report token=fixture-artifact-secret")
 
     result = app.api.list_artifacts({"workspace_id": workspace["id"]})
-    assert {item["kind"] for item in result["items"]} == {"markdown", "json"}
+    assert {item["kind"] for item in result["items"]} == {"markdown", "json", "docx", "pdf"}
     assert all(item["task_id"] == task["task_id"] for item in result["items"])
     assert all("owner" not in item and "storage_name" not in item for item in result["items"])
 
@@ -62,9 +62,9 @@ def test_completed_task_creates_private_checksum_verified_artifacts(dashboard_fa
         assert metadata["workspace_id"] == workspace["id"]
 
     task_details = app.api.task_details(task["task_id"])
-    assert len(task_details["artifacts"]) == 2
+    assert len(task_details["artifacts"]) == 4
     audit = app.api.database.list_audit(event="ARTIFACT_CREATED", limit=20)
-    assert len(audit) == 2
+    assert len(audit) == 4
 
     root = app.api.artifacts.repository.root
     if os.name == "posix":
@@ -134,7 +134,7 @@ def test_artifact_http_requires_auth_workspace_and_serves_safe_content_type(dash
         cookie = response.getheader("Set-Cookie").split(";", 1)[0].split("=", 1)[1]
 
         response, raw = request(connection, "GET", f"/api/artifacts?workspace_id={workspace['id']}", cookie=cookie)
-        assert response.status == 200 and len(json.loads(raw)["items"]) == 2
+        assert response.status == 200 and len(json.loads(raw)["items"]) == 4
         response, raw = request(
             connection,
             "GET",
@@ -154,6 +154,8 @@ def test_artifact_http_requires_auth_workspace_and_serves_safe_content_type(dash
         assert response.getheader("Content-Type") in {
             "text/markdown; charset=utf-8",
             "application/json; charset=utf-8",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/pdf",
         }
         assert raw
         assert app.api.database.list_audit(event="ARTIFACT_DOWNLOADED", limit=10)

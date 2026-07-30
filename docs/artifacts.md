@@ -1,15 +1,15 @@
 # Files and Artifacts
 
-Nexora 4.5 adds a private result-file layer without exposing the host
+Nexora 4.6 extends the private result-file layer without exposing the host
 filesystem or OpenClaw Gateway.
 
 ## User flow
 
 1. A workspace task reaches `COMPLETED`.
-2. Nexora generates Markdown and JSON result artifacts.
+2. Nexora generates Markdown, JSON, DOCX and PDF result artifacts.
 3. Open `/artifacts` to filter by task, preview text, or download a file.
 4. Task and Workbench details also show their related files.
-5. The existing Telegram owner receives the Markdown result.
+5. The existing Telegram owner receives one preferred document result.
 
 ## Storage and integrity
 
@@ -19,9 +19,33 @@ identifiers. Files use mode `0600`; directories use `0700`. Writes use a
 private temporary file, flush, `fsync`, atomic replace, final mode validation,
 and SHA-256 verification on read.
 
-Only platform-generated Markdown and JSON are enabled. An artifact is limited
-to 2 MiB. Symlinks, path traversal, executable formats, arbitrary uploads and
-host paths are rejected.
+Only platform-generated, allowlisted non-executable formats are enabled. An
+artifact is limited to 10 MiB. Symlinks, path traversal, executable formats,
+arbitrary uploads and host paths are rejected.
+
+## Rich document formats
+
+Every completed task produces:
+
+- Markdown for portable plain-text use;
+- JSON for machine-readable integration;
+- DOCX using the Nexora business-brief style;
+- PDF with an embedded Cyrillic-capable DejaVu Sans font.
+
+Requests that explicitly concern spreadsheets, tables, budgets, metrics,
+analytics or finance also produce XLSX. Requests for an archive, project file
+set or source bundle also produce ZIP with `MANIFEST.json` checksums.
+
+All renderers run in memory and receive only the redacted task title/result.
+DOCX/XLSX packages are rejected if they contain executable members or external
+relationships. XLSX contains no formulas or macros. PDF is rejected if active
+JavaScript or launch actions are detected. ZIP members use a fixed allowlist;
+user-provided paths are never accepted.
+
+The Dashboard previews only Markdown and JSON. Binary formats show metadata and
+must be downloaded through the authenticated, workspace-scoped endpoint.
+Telegram sends one preferred result document: DOCX, XLSX, PDF, ZIP, then
+Markdown as fallback.
 
 ## Access control
 

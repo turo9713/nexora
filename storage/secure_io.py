@@ -117,7 +117,9 @@ def secure_atomic_write_text(
     try:
         if hasattr(os, "fchmod"):
             os.fchmod(descriptor, PRIVATE_FILE_MODE)
-        with os.fdopen(descriptor, "w", encoding=encoding, newline="") as stream:
+        stream = os.fdopen(descriptor, "w", encoding=encoding, newline="")
+        descriptor = -1  # ownership transferred to the stream
+        with stream:
             stream.write(value)
             stream.flush()
             os.fsync(stream.fileno())
@@ -126,10 +128,11 @@ def secure_atomic_write_text(
         os.chmod(selected, PRIVATE_FILE_MODE)
         _fsync_directory(parent)
     except Exception:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         raise
     finally:
         temporary.unlink(missing_ok=True)
@@ -169,7 +172,9 @@ def secure_atomic_write_bytes(
     try:
         if hasattr(os, "fchmod"):
             os.fchmod(descriptor, PRIVATE_FILE_MODE)
-        with os.fdopen(descriptor, "wb") as stream:
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = -1  # ownership transferred to the stream
+        with stream:
             stream.write(bytes(value))
             stream.flush()
             os.fsync(stream.fileno())
@@ -178,10 +183,11 @@ def secure_atomic_write_bytes(
         os.chmod(selected, PRIVATE_FILE_MODE)
         _fsync_directory(parent)
     except Exception:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         raise
     finally:
         temporary.unlink(missing_ok=True)
@@ -202,13 +208,16 @@ def append_private_text(path: Path, value: str, *, root: Path | None = None) -> 
     try:
         if hasattr(os, "fchmod"):
             os.fchmod(descriptor, PRIVATE_FILE_MODE)
-        with os.fdopen(descriptor, "a", encoding="utf-8", newline="") as stream:
+        stream = os.fdopen(descriptor, "a", encoding="utf-8", newline="")
+        descriptor = -1  # ownership transferred to the stream
+        with stream:
             stream.write(value)
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(selected, PRIVATE_FILE_MODE)
     finally:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass

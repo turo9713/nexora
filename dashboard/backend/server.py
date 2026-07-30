@@ -794,6 +794,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
             "text/csv; charset=utf-8",
             "application/pdf",
+            "application/zip",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "image/png",
             "image/jpeg",
         }

@@ -2,6 +2,27 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.6.0] - 2026-07-30
+
+### Added
+
+- Safe DOCX and PDF documents for every completed task.
+- Intent-based XLSX generation for table, analytics, budget and finance tasks.
+- Intent-based ZIP bundles with a checksum manifest for archive/file-set tasks.
+- Telegram document delivery now prefers DOCX, then XLSX/PDF/ZIP, with
+  Markdown as a backward-compatible fallback.
+
+### Security
+
+- Rich artifacts are generated in memory from already-redacted task results.
+- Office files contain no macros, executable members, external relationships
+  or formulas; PDFs contain no JavaScript or launch actions.
+- Binary previews never decode file contents into the Dashboard. Downloads
+  remain authenticated, workspace-scoped, checksum-verified and audited.
+- Artifact files retain `0600` permissions and directories retain `0700`.
+- Private writers now transfer file-descriptor ownership exactly once,
+  preventing a concurrent writer from closing an unrelated descriptor.
+
 ## [4.5.0] - 2026-07-30
 
 ### Added

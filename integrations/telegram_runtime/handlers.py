@@ -161,10 +161,18 @@ class TelegramRuntimeHandlers:
             task_id=task_id,
             limit=10,
         )
-        markdown = next((item for item in artifacts if item.get("kind") == "markdown"), None)
-        if markdown is None:
+        preferred = next(
+            (
+                item
+                for kind in ("docx", "xlsx", "pdf", "zip", "markdown")
+                for item in artifacts
+                if item.get("kind") == kind
+            ),
+            None,
+        )
+        if preferred is None:
             return
-        metadata, payload = self.artifacts.download(namespace, str(markdown["id"]))
+        metadata, payload = self.artifacts.download(namespace, str(preferred["id"]))
         self._artifact_notifier(
             str(metadata["name"]),
             str(metadata["media_type"]),

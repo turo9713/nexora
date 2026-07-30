@@ -33,7 +33,7 @@ def test_unknown_user_gets_access_denied_and_cannot_change_context(handler_facto
     assert fake.calls == []
 
 
-def test_completed_task_sends_private_markdown_artifact(handler_factory):
+def test_completed_task_sends_private_document_artifact(handler_factory):
     delivered = []
     handler = handler_factory(
         FakeOrchestrator(["Безопасный итог"]),
@@ -45,9 +45,9 @@ def test_completed_task_sends_private_markdown_artifact(handler_factory):
     wait_for(lambda: active_task(handler)["status"] == "COMPLETED" and bool(delivered))
 
     name, media_type, payload = delivered[0]
-    assert name.endswith("-result.md")
-    assert media_type.startswith("text/markdown")
-    assert "Безопасный итог" in payload.decode("utf-8")
+    assert name.endswith("-result.docx")
+    assert media_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert payload.startswith(b"PK")
     workspace_id = active_task(handler)["workspace_id"]
     files = list((handler.artifacts.repository.root / handler.namespace / workspace_id).rglob("*"))
     assert files

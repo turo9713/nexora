@@ -23,6 +23,7 @@ from .secure_io import (
     secure_atomic_write_bytes,
     secure_atomic_write_json,
 )
+from .document_artifacts import DocumentRenderError, render_rich_artifacts
 
 
 ARTIFACT_ID = re.compile(r"^ART-[A-F0-9]{16}$")
@@ -31,8 +32,13 @@ TASK_ID = re.compile(r"^[A-Za-z0-9-]{3,100}$")
 ALLOWED_FORMATS = {
     "markdown": (".md", "text/markdown; charset=utf-8"),
     "json": (".json", "application/json; charset=utf-8"),
+    "docx": (".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "xlsx": (".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    "pdf": (".pdf", "application/pdf"),
+    "zip": (".zip", "application/zip"),
 }
-MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
+TEXT_FORMATS = {"markdown", "json"}
+MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
 
 
 class ArtifactError(RuntimeError):
@@ -260,8 +266,27 @@ class ArtifactService:
         ).encode("utf-8")
         existing = self.repository.list(task["owner"], task["workspace_id"], task_id=task_id)
         recorded = {(item["kind"], item["checksum_sha256"]) for item in existing}
+        payloads: dict[str, bytes] = {"markdown": markdown, "json": json_result}
+        render_task = {
+            "task_id": task_id,
+            "title": title,
+            "status": "COMPLETED",
+            "result": result,
+            "completed_at": task.get("completed_at") or task.get("updated_at"),
+        }
+        try:
+            payloads.update(render_rich_artifacts(render_task, payloads))
+        except DocumentRenderError as exc:
+            self.audit.record(
+                "ARTIFACT_RENDER_FAILED",
+                source="artifact_service",
+                action_result="FAILED",
+                task_id=task_id,
+                workspace_id=task["workspace_id"],
+                error_type=type(exc).__name__,
+            )
         artifacts = []
-        for kind, payload in (("markdown", markdown), ("json", json_result)):
+        for kind, payload in payloads.items():
             checksum = hashlib.sha256(payload).hexdigest()
             if (kind, checksum) in recorded:
                 continue
@@ -295,9 +320,9 @@ class ArtifactService:
     def backfill(self, owner: str, limit: int = 200) -> int:
         created = 0
         for task in self.database.list_tasks(owner, status="COMPLETED", limit=limit):
-            existing = self.repository.list(owner, str(task.get("workspace_id") or ""), task_id=str(task["id"])) if task.get("workspace_id") else []
-            if not existing:
-                created += len(self.capture_task(str(task["id"])))
+            # capture_task is checksum-idempotent and therefore also upgrades
+            # v4.5 Markdown/JSON-only tasks with the v4.6 rich formats.
+            created += len(self.capture_task(str(task["id"])))
         return created
 
     def list(self, owner: str, workspace_id: str, *, task_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -309,7 +334,11 @@ class ArtifactService:
             return None
         metadata, payload = self.repository.read(owner, artifact_id)
         safe = self._safe(metadata)
-        safe["preview"] = payload[:16_384].decode("utf-8", errors="replace")
+        safe["preview"] = (
+            payload[:16_384].decode("utf-8", errors="replace")
+            if metadata["kind"] in TEXT_FORMATS
+            else "Предпросмотр бинарного файла недоступен. Используйте безопасное скачивание."
+        )
         return safe
 
     def download(self, owner: str, artifact_id: str) -> tuple[dict[str, Any], bytes]:

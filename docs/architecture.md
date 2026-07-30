@@ -130,3 +130,10 @@ publisher code, user-supplied host path, or executable file is accepted.
 Artifact identity includes owner, workspace and task scope. Dashboard reads
 still pass authentication, RBAC and workspace membership checks. Stored bytes
 are verified against SHA-256 metadata before preview or download.
+
+### Rich documents v4.6
+
+The same artifact sink now invokes a bounded in-memory renderer for macro-free
+DOCX, action-free PDF, formula-free XLSX when requested, and allowlisted ZIP
+bundles. The storage, tenant isolation, audit, API and Telegram delivery paths
+remain those of v4.5; no direct Gateway or host-filesystem access was added.
