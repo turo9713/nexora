@@ -10,6 +10,7 @@ from nexora.storage.document_artifacts import (
     render_pdf,
     render_rich_artifacts,
     render_xlsx,
+    required_artifact_formats,
     selected_formats,
 )
 
@@ -26,6 +27,14 @@ def sample_task() -> dict[str, str]:
 def test_format_selection_is_deterministic_and_has_safe_defaults() -> None:
     assert selected_formats("Обычная задача", "Готово") == ("docx", "pdf")
     assert selected_formats("Excel-таблица и ZIP-архив", "Готово") == ("docx", "pdf", "xlsx", "zip")
+    assert required_artifact_formats("Excel ZIP", "Done") == (
+        "markdown",
+        "json",
+        "docx",
+        "pdf",
+        "xlsx",
+        "zip",
+    )
 
 
 def test_docx_is_macro_free_without_external_relationships() -> None:
@@ -85,9 +94,9 @@ def test_zip_contains_only_allowlisted_files_and_checksum_manifest() -> None:
         assert all(".." not in Path(name).parts for name in names)
 
 
-def test_binary_preview_is_safe_and_telegram_prefers_docx() -> None:
+def test_binary_preview_is_safe_and_telegram_delivers_all_rich_formats() -> None:
     project = Path(__file__).resolve().parents[2]
     handler_source = (project / "integrations" / "telegram_runtime" / "handlers.py").read_text(encoding="utf-8")
     artifact_source = (project / "storage" / "artifacts.py").read_text(encoding="utf-8")
-    assert '("docx", "xlsx", "pdf", "zip", "markdown")' in handler_source
+    assert '("docx", "xlsx", "pdf", "zip")' in handler_source
     assert "Предпросмотр бинарного файла недоступен" in artifact_source

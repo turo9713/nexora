@@ -145,6 +145,7 @@ class TelegramRuntimeHandlers:
             event_bus=self.events,
             execution_guard=self._runtime_policy_allowed,
             completion_callback=self._deliver_task_artifact,
+            completion_preflight=self.artifacts.ensure_task_artifacts,
         )
         self._awaiting_task = False
         self._last_message_at = 0.0
@@ -161,30 +162,29 @@ class TelegramRuntimeHandlers:
             task_id=task_id,
             limit=10,
         )
-        preferred = next(
-            (
-                item
-                for kind in ("docx", "xlsx", "pdf", "zip", "markdown")
-                for item in artifacts
-                if item.get("kind") == kind
-            ),
-            None,
-        )
-        if preferred is None:
-            return
-        metadata, payload = self.artifacts.download(namespace, str(preferred["id"]))
-        self._artifact_notifier(
-            str(metadata["name"]),
-            str(metadata["media_type"]),
-            payload,
-        )
-        self.audit.record(
-            "ARTIFACT_SENT_TO_OWNER",
-            task_id=task_id,
-            artifact_id=metadata["id"],
-            workspace_id=task["workspace_id"],
-            action_result="SENT",
-        )
+        selected = []
+        for kind in ("docx", "xlsx", "pdf", "zip"):
+            item = next(
+                (value for value in artifacts if value.get("kind") == kind),
+                None,
+            )
+            if item is not None:
+                selected.append(item)
+        for item in selected:
+            metadata, payload = self.artifacts.download(namespace, str(item["id"]))
+            self._artifact_notifier(
+                str(metadata["name"]),
+                str(metadata["media_type"]),
+                payload,
+            )
+            self.audit.record(
+                "ARTIFACT_SENT_TO_OWNER",
+                task_id=task_id,
+                artifact_id=metadata["id"],
+                workspace_id=task["workspace_id"],
+                kind=metadata["kind"],
+                action_result="SENT",
+            )
 
     def handle_update(self, update: dict[str, Any]) -> HandlerResponse | None:
         owner_event = self.access.is_owner_message(update) or self.access.is_owner_callback(update)

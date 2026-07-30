@@ -23,7 +23,11 @@ from .secure_io import (
     secure_atomic_write_bytes,
     secure_atomic_write_json,
 )
-from .document_artifacts import DocumentRenderError, render_rich_artifacts
+from .document_artifacts import (
+    DocumentRenderError,
+    render_rich_artifacts,
+    required_artifact_formats,
+)
 
 
 ARTIFACT_ID = re.compile(r"^ART-[A-F0-9]{16}$")
@@ -240,9 +244,18 @@ class ArtifactService:
         self.database = database
         self.audit = audit
 
-    def capture_task(self, task_id: str) -> list[dict[str, Any]]:
+    def capture_task(
+        self,
+        task_id: str,
+        *,
+        allow_incomplete: bool = False,
+    ) -> list[dict[str, Any]]:
         task = self.database.get_task_artifact_source(task_id)
-        if task is None or task.get("status") != "COMPLETED" or not task.get("workspace_id"):
+        if (
+            task is None
+            or (task.get("status") != "COMPLETED" and not allow_incomplete)
+            or not task.get("workspace_id")
+        ):
             return []
         result = redact_text(task.get("result_summary"), 100_000).strip()
         if not result:
@@ -265,7 +278,7 @@ class ArtifactService:
             indent=2,
         ).encode("utf-8")
         existing = self.repository.list(task["owner"], task["workspace_id"], task_id=task_id)
-        recorded = {(item["kind"], item["checksum_sha256"]) for item in existing}
+        recorded_kinds = {item["kind"] for item in existing}
         payloads: dict[str, bytes] = {"markdown": markdown, "json": json_result}
         render_task = {
             "task_id": task_id,
@@ -287,8 +300,7 @@ class ArtifactService:
             )
         artifacts = []
         for kind, payload in payloads.items():
-            checksum = hashlib.sha256(payload).hexdigest()
-            if (kind, checksum) in recorded:
+            if kind in recorded_kinds:
                 continue
             artifacts.append(
                 self.repository.create(
@@ -312,6 +324,43 @@ class ArtifactService:
                 kind=artifact["kind"],
             )
         return artifacts
+
+    def ensure_task_artifacts(self, task_id: str) -> list[dict[str, Any]]:
+        """Generate and verify every required artifact before completion."""
+
+        task = self.database.get_task_artifact_source(task_id)
+        if task is None or not task.get("workspace_id"):
+            raise ArtifactError("task artifact scope is unavailable")
+        result = redact_text(task.get("result_summary"), 100_000).strip()
+        title = redact_text(task.get("title"), 200)
+        if not result:
+            raise ArtifactError("task result is unavailable")
+
+        self.capture_task(task_id, allow_incomplete=True)
+        available = {
+            item["kind"]
+            for item in self.repository.list(
+                task["owner"],
+                task["workspace_id"],
+                task_id=task_id,
+            )
+        }
+        missing = sorted(set(required_artifact_formats(title, result)) - available)
+        if missing:
+            self.audit.record(
+                "ARTIFACT_REQUIREMENTS_FAILED",
+                source="artifact_service",
+                action_result="FAILED",
+                task_id=task_id,
+                workspace_id=task["workspace_id"],
+                missing_kinds=missing,
+            )
+            raise ArtifactError("required task artifacts are unavailable")
+        return self.repository.list(
+            task["owner"],
+            task["workspace_id"],
+            task_id=task_id,
+        )
 
     def event_sink(self, event: dict[str, Any]) -> None:
         if event.get("type") == "TASK_COMPLETED" and event.get("task_id"):

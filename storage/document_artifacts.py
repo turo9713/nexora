@@ -53,6 +53,12 @@ def selected_formats(title: str, result: str) -> tuple[str, ...]:
     return tuple(formats)
 
 
+def required_artifact_formats(title: str, result: str) -> tuple[str, ...]:
+    """Return every artifact kind required before a task may complete."""
+
+    return ("markdown", "json", *selected_formats(title, result))
+
+
 def _plain_lines(value: str) -> list[str]:
     lines = []
     for raw in str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):

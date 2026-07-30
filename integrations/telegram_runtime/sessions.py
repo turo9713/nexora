@@ -134,6 +134,12 @@ class DialogueSessionStore:
             "Continue the existing owner-only Telegram dialogue.",
             "Use facts already provided in earlier turns and answer the latest owner message.",
             "Do not claim that you performed external actions. Do not use tools or reveal internal secrets.",
+            (
+                "Nexora's internal artifact layer will safely generate and attach requested "
+                "DOCX, PDF, XLSX, and ZIP files after your response. Do not claim that file "
+                "creation or attachment is unavailable. Provide substantive report and table "
+                "content for the artifact layer to render; never emit binary data or file paths."
+            ),
             "Conversation:",
         ]
         labels = {"user": "OWNER", "assistant": "ASSISTANT"}

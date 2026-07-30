@@ -2,6 +2,24 @@
 
 All notable changes follow Semantic Versioning.
 
+## [4.6.1] - 2026-07-30
+
+### Fixed
+
+- Telegram now delivers every generated rich artifact instead of stopping
+  after the preferred DOCX file.
+- Explicit XLSX and ZIP requests are enforced before a task may transition to
+  `COMPLETED`.
+- The Telegram runtime prompt now accurately describes Nexora's internal
+  artifact renderer, preventing false claims that file creation is unavailable.
+
+### Security
+
+- Artifact completion is fail-closed: missing required files move the task to
+  `FAILED` without weakening workspace isolation or exposing host paths.
+- Generated formats remain allowlisted, checksum-verified, private (`0600`),
+  and free of macros, formulas, executable members, and external relationships.
+
 ## [4.6.0] - 2026-07-30
 
 ### Added

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_and_public_boundary() -> None:
-    assert (ROOT / "VERSION").read_text().strip() == "4.6.0"
+    assert (ROOT / "VERSION").read_text().strip() == "4.6.1"
     assert (ROOT / "LICENSE").is_file()
     assert (ROOT / "SECURITY.md").is_file()
     assert (ROOT / "core/README.md").is_file()

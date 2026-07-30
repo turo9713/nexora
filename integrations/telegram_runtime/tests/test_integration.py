@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from .conftest import (
     FakeOrchestrator,
@@ -51,6 +52,41 @@ def test_completed_task_sends_private_document_artifact(handler_factory):
     workspace_id = active_task(handler)["workspace_id"]
     files = list((handler.artifacts.repository.root / handler.namespace / workspace_id).rglob("*"))
     assert files
+
+
+def test_explicit_formats_are_all_delivered_and_required_before_completion(handler_factory):
+    delivered = []
+    fake = FakeOrchestrator(
+        ["Report ready. The spreadsheet and archive contain safe results."]
+    )
+    handler = handler_factory(
+        fake,
+        artifact_notifier=lambda name, media_type, payload: delivered.append(
+            (name, media_type, payload)
+        ),
+    )
+    handler.handle_update(
+        owner_message(1, "/newtask Create a report, Excel spreadsheet and ZIP archive")
+    )
+    wait_for(lambda: active_task(handler)["status"] == "COMPLETED")
+    wait_for(lambda: len(delivered) == 4)
+
+    suffixes = [Path(name).suffix for name, _, _ in delivered]
+    assert suffixes == [".docx", ".xlsx", ".pdf", ".zip"]
+    assert all(payload for _, _, payload in delivered)
+    assert "artifact layer" in fake.calls[0]["description"]
+
+
+def test_missing_required_artifact_fails_closed(handler_factory, monkeypatch):
+    handler = handler_factory(FakeOrchestrator(["Safe result"]))
+
+    def fail_create(*args, **kwargs):
+        raise OSError("simulated artifact storage failure")
+
+    monkeypatch.setattr(handler.artifacts.repository, "create", fail_create)
+    handler.handle_update(owner_message(1, "/newtask Create Excel report"))
+    wait_for(lambda: active_task(handler)["status"] == "FAILED")
+    assert active_task(handler)["status"] != "COMPLETED"
 
 
 def test_unknown_user_cannot_read_history(handler_factory):

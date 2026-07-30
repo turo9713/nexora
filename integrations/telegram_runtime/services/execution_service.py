@@ -16,6 +16,7 @@ from .task_service import TaskService
 
 Notifier = Callable[[str, dict[str, Any] | None], None]
 CompletionCallback = Callable[[str, str], None]
+CompletionPreflight = Callable[[str], Any]
 
 
 def response_requests_clarification(text: str) -> bool:
@@ -38,6 +39,7 @@ class ExecutionService:
         event_bus: Any | None = None,
         execution_guard: Callable[[], bool] | None = None,
         completion_callback: CompletionCallback | None = None,
+        completion_preflight: CompletionPreflight | None = None,
         source: str = "telegram_runtime_v1.4",
         created_by: str = "telegram-owner",
     ) -> None:
@@ -52,6 +54,7 @@ class ExecutionService:
         self.event_bus = event_bus
         self.execution_guard = execution_guard
         self.completion_callback = completion_callback
+        self.completion_preflight = completion_preflight
         self.source = source
         self.created_by = created_by
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nexora-task")
@@ -145,6 +148,8 @@ class ExecutionService:
             if response_requests_clarification(assistant_text):
                 task = self.tasks.transition(namespace, task_id, "CLARIFYING", event="CLARIFICATION_REQUESTED")
             else:
+                if self.completion_preflight is not None:
+                    self.completion_preflight(task_id)
                 task = self.tasks.transition(namespace, task_id, "COMPLETED", event="WORKFLOW_COMPLETED")
             self._notify(format_task_outcome_v14(task), None)
             if task["status"] == "COMPLETED" and self.completion_callback is not None:
